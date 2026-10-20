@@ -111,17 +111,24 @@ def test_observe_review_source_and_forgetting(client, tmp_path):
 
 
 def test_summary_is_reviewed_and_never_exported_by_default(client, tmp_path):
-    for i in range(6):
-        response = client.post("/api/chat/messages", json={"text": "Сообщение номер " + str(i)})
-        assert response.status_code == 201
+    # v0.8 не извлекает сырую переписку: только подтверждённые факты с источником.
+    response=client.post("/api/chat/messages", json={"text": "Я люблю шахматы"})
+    assert response.status_code == 201
     client.post("/api/memory/process")
-    summaries = client.get("/api/memory/summaries").json()["summaries"]
-    assert len(summaries) == 1
-    assert summaries[0]["status"] == "draft"
+    candidate=client.get("/api/memory/candidates").json()["candidates"][0]
+    assert client.post("/api/memory/candidates/" + candidate["id"] + "/review",
+                       json={"approve": True}).status_code == 200
+    for i in range(5):
+        assert client.post("/api/chat/messages", json={"text": "Сообщение номер " + str(i)}).status_code == 201
+    client.post("/api/memory/process")
+    summaries=client.get("/api/memory/summaries").json()["summaries"]
+    assert len(summaries)==1
+    assert summaries[0]["status"]=="draft"
+    assert "шахматы" in summaries[0]["content"]
     assert summaries[0]["cloudAllowed"] is False
-    assert client.post("/api/memory/summaries/main/review", json={"approve": True}).status_code == 200
-    assert MemoryEngine(tmp_path / "memory.sqlite3").prepare("что обсуждали раньше", "main", True) == ""
-    assert "Локальная выписка" in MemoryEngine(tmp_path / "memory.sqlite3").prepare("что обсуждали раньше", "main", False)
+    assert client.post("/api/memory/summaries/main/review",json={"approve": True}).status_code==200
+    assert MemoryEngine(tmp_path / "memory.sqlite3").prepare("что обсуждали раньше", "main", True)==""
+    assert "шахматы" in MemoryEngine(tmp_path / "memory.sqlite3").prepare("что обсуждали раньше", "main", False)
 
 
 def test_erasing_chat_clears_derived_memories(client):
