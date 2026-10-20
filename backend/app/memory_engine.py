@@ -97,6 +97,9 @@ class MemoryEngine:
                         source.backup(dest)
         with closing(db.connection(self.path)) as conn:
             with conn:
+                old_revision_schema = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_revisions'"
+                ).fetchone() is not None
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_items (
                     id TEXT PRIMARY KEY, content TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'fact', status TEXT NOT NULL
@@ -143,6 +146,10 @@ class MemoryEngine:
                       CHECK(status IN ('draft','approved','invalid')),
                     cloud_allowed INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
                 )""")
+                # Сводки v0.7 были построены из сырых сообщений и не удовлетворяют
+                # новому инварианту provenance. Удаляем их ТОЛЬКО при миграции.
+                if not old_revision_schema:
+                    conn.execute("DELETE FROM memory_summaries")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_jobs (
                     id TEXT PRIMARY KEY, kind TEXT NOT NULL,
                     ref_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
@@ -476,7 +483,7 @@ class MemoryEngine:
             if total<12:
                 return
             selected=conn.execute(
-                "SELECT m.content,m.source_message_id FROM memory_items m "
+                "SELECT m.id,m.content,m.source_message_id FROM memory_items m "
                 "JOIN messages source ON source.id=m.source_message_id AND source.role='user' "
                 "LEFT JOIN memory_excluded_sources banned ON banned.source_message_id=m.source_message_id "
                 "WHERE m.conversation_id=? AND m.status='confirmed' AND banned.source_message_id IS NULL "
@@ -499,11 +506,13 @@ class MemoryEngine:
                 if not conn.execute("SELECT 1 FROM messages WHERE id=? AND conversation_id=?",
                                     (source_id,conversation_id)).fetchone():
                     return  # исключает восстановление выписки после очистки диалога
-                if not conn.execute(
-                    "SELECT 1 FROM memory_items WHERE conversation_id=? AND status='confirmed'",
-                    (conversation_id,)
-                ).fetchone():
-                    return
+                if any(
+                    not conn.execute(
+                        "SELECT 1 FROM memory_items WHERE id=? AND status='confirmed'",
+                        (item["id"],)
+                    ).fetchone() for item in selected
+                ):
+                    return  # забытый факт не возвращается через гонку фоновой сводки
                 conn.execute(
                     "INSERT INTO memory_summaries(conversation_id,content,source_message_id,status,updated_at) "
                     "VALUES(?,?,?,'draft',?) ON CONFLICT(conversation_id) DO UPDATE SET "
