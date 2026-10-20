@@ -38,7 +38,22 @@ def initialise(path):
             columns = {r["name"] for r in conn.execute("PRAGMA table_info(cloud_requests)")}
             if "conversation_id" not in columns:
                 conn.execute("ALTER TABLE cloud_requests ADD COLUMN conversation_id TEXT NOT NULL DEFAULT 'main'")
+            conv_columns = {r["name"] for r in conn.execute("PRAGMA table_info(conversations)")}
+            if "generation" not in conv_columns:
+                conn.execute("ALTER TABLE conversations ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conv_time ON messages(conversation_id, sent_at)")
+
+
+class StaleConversation(RuntimeError):
+    """История очищена во время ответа; запрещена запись из старого поколения."""
+
+
+def conversation_epoch(path, conv_id):
+    with closing(connection(path)) as conn:
+        row = conn.execute("SELECT generation FROM conversations WHERE id=?", (conv_id,)).fetchone()
+    if row is None:
+        raise StaleConversation("Диалог удалён во время генерации.")
+    return row["generation"]
 
 
 def ensure_conversation(path, conv_id):
@@ -104,18 +119,24 @@ def messages(path, conv_id=MAIN, limit=200):
 def clear_messages(path, conv_id):
     with closing(connection(path)) as conn:
         with conn:
+            conn.execute("UPDATE conversations SET generation=generation+1,updated_at=? WHERE id=?",
+                         (int(time.time()*1000),conv_id))
             count = conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,)).rowcount
             # Очищение истории не снимает блокировки неопределённых платных запросов.
             # Сохраняем журнал ID даже после очистки истории для защиты от повторной оплаты.
     return count
 
 
-def append_exchange(path, user_text, answer, conv_id):
+def append_exchange(path, user_text, answer, conv_id, expected_epoch=None):
     now = int(time.time()*1000)
     user = dict(id=uuid.uuid4().hex,role="user",text=user_text,sentAt=now)
     assistant = dict(id=uuid.uuid4().hex,role="assistant",text=answer,sentAt=now+1)
     with closing(connection(path)) as conn:
         with conn:
+            if expected_epoch is not None:
+                row=conn.execute("SELECT generation FROM conversations WHERE id=?", (conv_id,)).fetchone()
+                if row is None or row["generation"] != expected_epoch:
+                    raise StaleConversation("История диалога очищена во время ответа.")
             conn.executemany(
                 "INSERT INTO messages(id,role,text,sent_at,conversation_id) VALUES(?,?,?,?,?)",
                 [(r["id"],r["role"],r["text"],r["sentAt"],conv_id) for r in (user,assistant)])
@@ -169,12 +190,17 @@ def mark_cloud_conversation(path,request_id,conv_id):
             conn.execute("UPDATE cloud_requests SET conversation_id=? WHERE request_id=?",(conv_id,request_id))
 
 
-def complete_cloud_exchange(path, request_id, conv_id, user_text, answer):
+def complete_cloud_exchange(path, request_id, conv_id, user_text, answer, expected_epoch=None):
     now=int(time.time()*1000)
     user=dict(id=uuid.uuid4().hex,role="user",text=user_text,sentAt=now)
     assistant=dict(id=uuid.uuid4().hex,role="assistant",text=answer,sentAt=now+1)
     with closing(connection(path)) as conn:
         with conn:
+            if expected_epoch is not None:
+                row=conn.execute("SELECT generation FROM conversations WHERE id=?", (conv_id,)).fetchone()
+                if row is None or row["generation"] != expected_epoch:
+                    raise StaleConversation("История очищена во время ответа Cloud.ru. "
+                                            "Повторная платная отправка не выполняется.")
             conn.executemany(
                 "INSERT INTO messages(id,role,text,sent_at,conversation_id) VALUES(?,?,?,?,?)",
                 [(r["id"],r["role"],r["text"],r["sentAt"],conv_id) for r in (user,assistant)])
