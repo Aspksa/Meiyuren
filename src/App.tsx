@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { IconSidebar } from './components/IconSidebar';
 import { UpdatePanel } from './components/UpdatePanel';
+import { CloudSettingsPanel } from './components/CloudSettingsPanel';
 import { Avatar } from './components/Avatar';
 import { ChatPanel } from './components/ChatPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -16,6 +17,7 @@ export default function App() {
   const openChat = useAppStore((s) => s.openChat);
   const openSettings = useAppStore((s) => s.openSettings);
   const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
 
   // Escape слушаем на window: так он работает, даже когда фокус на body.
   // Сначала закрываются настройки (они поверх), затем чат.
@@ -23,13 +25,14 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       const state = useAppStore.getState();
+      if (cloudOpen) { setCloudOpen(false); return; }
       if (updatesOpen) { setUpdatesOpen(false); return; }
       if (state.settingsOpen) state.closeSettings();
       else if (state.chatOpen) state.closeChat();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [updatesOpen]);
+  }, [updatesOpen, cloudOpen]);
 
   return (
     <div className="site">
@@ -112,16 +115,19 @@ export default function App() {
       <footer className="site-footer">
         <span>✦ MEIYUREN © 2026</span>
         <span>Создано с любовью к маленьким чудесам</span>
-        <span className="site-footer__version">v0.4 · Python и память</span>
+        <span className="site-footer__version">v0.5 · Cloud.ru</span>
       </footer>
 
       <IconSidebar
         updatesOpen={updatesOpen}
         onChat={() => { setUpdatesOpen(false); openChat(); }}
         onSettings={() => { setUpdatesOpen(false); openSettings({ x: 110, y: 120 }); }}
-        onUpdates={() => { useAppStore.getState().closeSettings(); setUpdatesOpen((value) => !value); }}
+        onUpdates={() => { useAppStore.getState().closeSettings(); setCloudOpen(false); setUpdatesOpen((value) => !value); }}
+        cloudOpen={cloudOpen}
+        onCloud={() => { useAppStore.getState().closeSettings(); setUpdatesOpen(false); setCloudOpen((value) => !value); }}
       />
       <UpdatePanel open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
+      <CloudSettingsPanel open={cloudOpen} onClose={() => setCloudOpen(false)} />
       <Avatar />
       <ChatPanel />
       <SettingsPanel />

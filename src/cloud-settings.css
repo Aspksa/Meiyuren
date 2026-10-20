@@ -1,0 +1,31 @@
+.cloud-settings{position:fixed;z-index:72;top:50%;left:94px;transform:translateY(-50%);width:min(440px,calc(100vw - 110px));max-height:calc(100svh - 28px);overflow:auto;border:1px solid #edc48865;border-radius:22px;background:linear-gradient(155deg,#2a2115f9,#120d0af9);box-shadow:0 25px 90px #000c;color:#f6e3c6;backdrop-filter:blur(22px)}
+.cloud-settings__header{display:flex;align-items:center;gap:15px;border-bottom:1px solid #eac68c30;padding:20px 23px}
+.cloud-settings__emblem{width:50px;height:50px;display:grid;place-items:center;flex:none;color:#f3d090;border:1px solid #e5ba775a;background:#d2ad7115;border-radius:14px}
+.cloud-settings__eyebrow{font-size:9px;letter-spacing:.18em;color:#bda279}
+.cloud-settings h2{margin:5px 0 0;font:italic 29px Georgia,serif;color:#f5d4a2}
+.cloud-settings__close{margin-left:auto;align-self:flex-start;border:1px solid #e0b77836;color:#eddbbd;border-radius:50%;width:30px;height:30px;background:#ffffff0d;font-size:22px}
+.cloud-settings__body{padding:22px}
+.cloud-settings__description,.cloud-settings__hint,.cloud-settings__footer p{color:#bdad96;font-size:12px;line-height:1.7;margin:0 0 18px}
+.cloud-settings__status{display:flex;align-items:center;gap:9px;padding:13px 12px;margin-bottom:19px;font-size:11px;border:1px solid #f0c8822b;border-radius:12px;background:#ffffff08}
+.cloud-settings__status strong{color:#e9c48e;margin-left:auto;font-size:10px;font-weight:500}
+.cloud-settings__led{width:8px;height:8px;border-radius:50%;background:#9e7566;flex:none}
+.cloud-settings__led--on{background:#9fca9b;box-shadow:0 0 12px #9fca9b7c}
+.cloud-settings__label{display:block;font-size:12px;margin-bottom:9px;color:#eddbbb}
+.cloud-settings__input,.cloud-settings__select{display:block;width:100%;box-sizing:border-box;padding:13px;border-radius:11px;border:1px solid #edbe8153;outline:none;background:#0b080ab8;color:#f8dec1;font:12px Inter,'Segoe UI',Arial,sans-serif}
+.cloud-settings__input:focus,.cloud-settings__select:focus{border-color:#ffe0a2}
+.cloud-settings__input::placeholder{color:#97836a}
+.cloud-settings__actions{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0 18px}
+.cloud-settings__actions button,.cloud-settings__model-title button{padding:10px 13px;font-size:11px;border:1px solid #c99a6059;border-radius:10px;color:#f3d9af;background:#ffffff0a}
+.cloud-settings__actions button:disabled,.cloud-settings__model-title button:disabled{opacity:.45;cursor:not-allowed}
+.cloud-settings__actions .cloud-settings__primary{border-color:transparent;background:linear-gradient(120deg,#f2d49f,#d6a666);color:#2c1d0e;font-weight:700}
+.cloud-settings__separator{height:1px;background:linear-gradient(90deg,transparent,#e0b57250,transparent);margin:18px 0}
+.cloud-settings__model-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.cloud-settings__model-title .cloud-settings__label{margin:0}
+.cloud-settings__hint{font-size:10px;margin:9px 0 18px}
+.cloud-settings__error,.cloud-settings__success{font-size:12px;line-height:1.5;border-radius:10px;padding:10px 12px;overflow-wrap:anywhere}
+.cloud-settings__error{color:#ffc9bc;border:1px solid #db726753;background:#922d251e}
+.cloud-settings__success{color:#b7e9b7;border:1px solid #7fb16c58;background:#3d602b1f}
+.cloud-settings__footer{border-top:1px solid #e3c08435;padding-top:16px;margin-top:16px}
+.cloud-settings__footer p{font-size:10px;margin-bottom:8px}
+.cloud-settings__footer a{font-size:11px;color:#f5d19a}
+@media(max-width:600px){.cloud-settings{left:63px;width:calc(100vw - 70px)}.cloud-settings__header{padding:15px}.cloud-settings__body{padding:16px}.cloud-settings__actions button{flex:1}}

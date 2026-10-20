@@ -10,15 +10,24 @@ function Icon({ name }: { name: IconName }) {
   return <svg {...common} aria-hidden="true"><path d="M9 19c-4 1.2-4-2-5-2.5m10 5v-3a3.4 3.4 0 0 0-.8-2.7c3-.3 6.3-1.4 6.3-7a5.4 5.4 0 0 0-1.5-3.8 5 5 0 0 0-.1-3.8S16 1 14 2.7a14 14 0 0 0-5 0C7 1 5.1 1.2 5.1 1.2a5 5 0 0 0-.1 3.8A5.4 5.4 0 0 0 3.5 9c0 5.6 3.3 6.7 6.3 7a3.3 3.3 0 0 0-.8 2.7v3" /></svg>;
 }
 
+function CloudSymbol() {
+  return <svg width="25" height="25" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <path d="M8 24a6.5 6.5 0 0 1-1.5-12.8 9 9 0 0 1 17.3 1.8A5.8 5.8 0 0 1 24 24H8Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M13 18h6m-3-3v6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+  </svg>;
+}
+
 function SidebarButton({ label, active = false, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: ReactNode }) {
   return <button type="button" aria-label={label} aria-pressed={active} title={label} className={`side-nav__button${active ? ' side-nav__button--active' : ''}`} onClick={onClick}>{children}</button>;
 }
 
-export function IconSidebar({ onChat, onSettings, onUpdates, updatesOpen }: {
+export function IconSidebar({ onChat, onSettings, onUpdates, onCloud, updatesOpen, cloudOpen }: {
   onChat: () => void;
   onSettings: () => void;
   onUpdates: () => void;
+  onCloud: () => void;
   updatesOpen: boolean;
+  cloudOpen: boolean;
 }) {
   return (
     <nav className="side-nav" aria-label="Главное меню">
@@ -29,6 +38,7 @@ export function IconSidebar({ onChat, onSettings, onUpdates, updatesOpen }: {
       <SidebarButton label="Обновления" active={updatesOpen} onClick={onUpdates}>
         <img className="side-nav__update" src={`${import.meta.env.BASE_URL}assets/icons/update.svg`} alt="" aria-hidden="true" />
       </SidebarButton>
+      <SidebarButton label="Cloud.ru" active={cloudOpen} onClick={onCloud}><CloudSymbol /></SidebarButton>
       <SidebarButton label="Настройки" onClick={onSettings}><Icon name="settings" /></SidebarButton>
       <span className="side-nav__spacer" aria-hidden="true" />
       <a className="side-nav__button" href="https://github.com/Aspksa/Meiyuren" target="_blank" rel="noopener noreferrer" aria-label="Репозиторий GitHub" title="Репозиторий GitHub"><Icon name="github" /></a>

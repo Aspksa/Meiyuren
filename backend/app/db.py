@@ -35,6 +35,13 @@ def initialise(path: Path) -> None:
                 )
             """)
             db.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    model TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
+                )
+            """)
+            db.execute("""
                 CREATE TABLE IF NOT EXISTS profile_memory (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     notes TEXT NOT NULL DEFAULT '',
@@ -96,3 +103,19 @@ def put_memory(path: Path, notes: str) -> dict:
                 (notes, now),
             )
     return {"notes": notes, "updatedAt": now}
+
+def cloud_config(path: Path) -> dict:
+    with closing(connection(path)) as db:
+        row = db.execute("SELECT model, enabled FROM cloud_settings WHERE id = 1").fetchone()
+    return {"model": row["model"], "enabled": bool(row["enabled"])} if row else {"model": "", "enabled": False}
+
+
+def update_cloud_config(path: Path, model: str, enabled: bool) -> dict:
+    with closing(connection(path)) as db:
+        with db:
+            db.execute(
+                "INSERT INTO cloud_settings(id, model, enabled) VALUES (1, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET model=excluded.model, enabled=excluded.enabled",
+                (model, int(enabled)),
+            )
+    return {"model": model, "enabled": enabled}
