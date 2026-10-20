@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 import uuid
+import hashlib
 
 
 def default_database() -> Path:
@@ -32,6 +33,16 @@ def initialise(path: Path) -> None:
                     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
                     text TEXT NOT NULL,
                     sent_at INTEGER NOT NULL
+                )
+            """)
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_requests (
+                    request_id TEXT PRIMARY KEY,
+                    text_digest TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK (state IN ('pending', 'done', 'unknown')),
+                    user_message_id TEXT,
+                    assistant_message_id TEXT,
+                    created_at INTEGER NOT NULL
                 )
             """)
             db.execute("""
@@ -119,3 +130,67 @@ def update_cloud_config(path: Path, model: str, enabled: bool) -> dict:
                 (model, int(enabled)),
             )
     return {"model": model, "enabled": enabled}
+
+def reserve_request(path: Path, request_id: str, text: str) -> tuple[str, dict | None]:
+    # UUID проверяется здесь: request_id используется только как значение SQL, не в путях.
+    try:
+        identifier = str(uuid.UUID(request_id))
+    except (ValueError, AttributeError):
+        return "invalid", None
+    if identifier != request_id:
+        return "invalid", None
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    with closing(connection(path)) as db:
+        with db:
+            created = db.execute(
+                "INSERT OR IGNORE INTO cloud_requests(request_id,text_digest,state,created_at) "
+                "VALUES(?,?,'pending',?)", (identifier, digest, int(time.time() * 1000))
+            ).rowcount
+            if created:
+                return "new", None
+            row = db.execute("SELECT * FROM cloud_requests WHERE request_id=?", (identifier,)).fetchone()
+            if row["text_digest"] != digest:
+                return "conflict", None
+            if row["state"] != "done":
+                return row["state"], None
+            user = db.execute(
+                "SELECT id,role,text,sent_at FROM messages WHERE id=?", (row["user_message_id"],)
+            ).fetchone()
+            assistant = db.execute(
+                "SELECT id,role,text,sent_at FROM messages WHERE id=?", (row["assistant_message_id"],)
+            ).fetchone()
+            if user and assistant:
+                return "done", {
+                    "user": dict(id=user["id"], role=user["role"], text=user["text"], sentAt=user["sent_at"]),
+                    "assistant": dict(id=assistant["id"], role=assistant["role"], text=assistant["text"], sentAt=assistant["sent_at"]),
+                }
+    return "unknown", None
+
+
+def finish_request(path: Path, request_id: str, user_text: str, assistant_text: str) -> dict:
+    now = int(time.time() * 1000)
+    user = {"id": uuid.uuid4().hex, "role": "user", "text": user_text, "sentAt": now}
+    assistant = {"id": uuid.uuid4().hex, "role": "assistant", "text": assistant_text, "sentAt": now + 1}
+    with closing(connection(path)) as db:
+        with db:
+            db.executemany(
+                "INSERT INTO messages(id,role,text,sent_at) VALUES(?,?,?,?)",
+                [(x["id"], x["role"], x["text"], x["sentAt"]) for x in (user, assistant)],
+            )
+            changed = db.execute(
+                "UPDATE cloud_requests SET state='done',user_message_id=?,assistant_message_id=? "
+                "WHERE request_id=? AND state='pending'",
+                (user["id"], assistant["id"], request_id),
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("Cloud-запрос уже был завершён")
+    return {"user": user, "assistant": assistant}
+
+
+def fail_request(path: Path, request_id: str) -> None:
+    with closing(connection(path)) as db:
+        with db:
+            db.execute(
+                "UPDATE cloud_requests SET state='unknown' WHERE request_id=? AND state='pending'",
+                (request_id,),
+            )

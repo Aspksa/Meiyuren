@@ -15,12 +15,12 @@ export async function getCloudSettings(signal?: AbortSignal): Promise<CloudSetti
 
 export async function putCloudKey(key: string): Promise<void> {
   await parseResponse(await fetch('/api/cloud/key', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ key }),
   }));
 }
 
 export async function deleteCloudKey(): Promise<void> {
-  await parseResponse(await fetch('/api/cloud/key', { method: 'DELETE' }));
+  await parseResponse(await fetch('/api/cloud/key', { method: 'DELETE', headers: { 'X-Meiyuren-Client': '1' } }));
 }
 
 export async function getCloudModels(): Promise<string[]> {
@@ -30,6 +30,6 @@ export async function getCloudModels(): Promise<string[]> {
 
 export async function putCloudSettings(model: string, enabled: boolean): Promise<void> {
   await parseResponse(await fetch('/api/cloud/settings', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, enabled }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ model, enabled }),
   }));
 }
