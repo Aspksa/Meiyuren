@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
+import { avatarUrl } from '../lib/avatars';
 import { startingPosition } from '../lib/position';
 import { replyAfterDelay } from '../services/replies';
 import { useAppStore } from '../store/useAppStore';
@@ -10,6 +11,7 @@ export function ChatPanel() {
   const addMessage = useAppStore((s) => s.addMessage);
   const position = useAppStore((s) => s.position);
   const size = useAppStore((s) => s.size);
+  const avatarId = useAppStore((s) => s.avatarId);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -51,7 +53,7 @@ export function ChatPanel() {
   return (
     <section className={`chat-panel chat-panel--${side}`} role="dialog" aria-label="Чат с Мэйюрэн">
       <header className="panel-header">
-        <span className="panel-header__mark"><img className="panel-header__portrait" src={`${import.meta.env.BASE_URL}assets/avatar/meiyuren.webp`} alt="" /></span>
+        <span className="panel-header__mark"><img className="panel-header__portrait" src={avatarUrl(avatarId)} alt="" /></span>
         <div>
           <strong>Мэйюрэн</strong>
           <span className="panel-header__sub">Демо-чат · локальные ответы</span>

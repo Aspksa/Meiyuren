@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AVATARS, avatarUrl } from '../lib/avatars';
 import { OPACITY_MAX, OPACITY_MIN, SIZE_MAX, SIZE_MIN, useAppStore } from '../store/useAppStore';
 
 export function SettingsPanel() {
@@ -13,6 +14,8 @@ export function SettingsPanel() {
   const setGreeting = useAppStore((s) => s.setGreetingEnabled);
   const resetPosition = useAppStore((s) => s.resetPosition);
   const clearChat = useAppStore((s) => s.clearChat);
+  const avatarId = useAppStore((s) => s.avatarId);
+  const setAvatarId = useAppStore((s) => s.setAvatarId);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
 
   useEffect(() => {
@@ -26,7 +29,7 @@ export function SettingsPanel() {
   if (!open) return null;
   const width = Math.min(320, viewport.width - 24);
   const left = Math.max(12, Math.min(anchor.x, viewport.width - width - 12));
-  const top = Math.max(12, Math.min(anchor.y, viewport.height - Math.min(390, viewport.height - 24) - 12));
+  const top = Math.max(12, Math.min(anchor.y, viewport.height - Math.min(560, viewport.height - 24) - 12));
 
   return (
     <aside className="settings-panel" role="dialog" aria-label="Настройки аватара" style={{ left, top, width }}>
@@ -39,6 +42,25 @@ export function SettingsPanel() {
         <button type="button" onClick={close} className="icon-button panel-header__close" aria-label="Закрыть настройки">×</button>
       </header>
       <div className="settings-panel__body">
+        <fieldset className="setting avatar-picker">
+          <legend className="setting__heading"><span>Образ</span><output>{AVATARS.find((item) => item.id === avatarId)?.label}</output></legend>
+          <div className="avatar-picker__grid" role="radiogroup" aria-label="Выбор аватара">
+            {AVATARS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={item.id === avatarId}
+                aria-label={item.label}
+                title={item.label}
+                className={`avatar-picker__item ${item.id === avatarId ? 'avatar-picker__item--active' : ''}`}
+                onClick={() => setAvatarId(item.id)}
+              >
+                <img src={avatarUrl(item.id, true)} alt="" loading="lazy" draggable={false} />
+              </button>
+            ))}
+          </div>
+        </fieldset>
         <label className="setting">
           <span className="setting__heading"><span>Размер аватара</span><output>{size} px</output></span>
           <input type="range" min={SIZE_MIN} max={SIZE_MAX} step="10" value={size} onChange={(event) => setSize(Number(event.target.value))} />

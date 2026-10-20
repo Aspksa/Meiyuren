@@ -42,6 +42,6 @@ npm run build
 
 Размер, прозрачность, позиция и приветствие сохраняются в браузере. Ответы в чате пока демонстрационные, без AI API.
 
-Файл аватара: `public/assets/avatar/meiyuren.webp`. Иконка ярлыка и браузера: `public/assets/icons/meiyuren.ico`.
+Образ аватара выбирается в настройках (ПКМ → «Образ»). Картинки поз: `public/assets/avatar/poses/` (полная картинка `<id>.webp` и миниатюра `<id>-thumb.webp`), список поз — `src/lib/avatars.ts`. Иконка ярлыка и браузера: `public/assets/icons/meiyuren.ico`.
 
 Архитектура: [docs/architecture.md](docs/architecture.md). Документация на русском языке. PowerShell не используется.

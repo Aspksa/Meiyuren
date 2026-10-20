@@ -109,6 +109,13 @@ button:focus-visible, input:focus-visible, .avatar:focus-visible { outline: 2px 
 .settings-panel { z-index: 60; max-height: calc(100svh - 24px); overflow-y: auto; }
 .settings-panel__body { padding: 20px; }
 .setting { display: block; margin-bottom: 23px; }
+.avatar-picker { border: 0; padding: 0; min-width: 0; }
+.avatar-picker legend { width: 100%; padding: 0; }
+.avatar-picker__grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.avatar-picker__item { aspect-ratio: 1; padding: 3px; border-radius: 12px; border: 1px solid var(--line); background: #fbf3e406; transition: border-color .15s, background .15s, transform .15s; }
+.avatar-picker__item img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+.avatar-picker__item:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.avatar-picker__item--active { border-color: var(--gold); background: #e7bf621f; box-shadow: 0 0 0 1px var(--gold), 0 0 14px #e7bf6240; }
 .setting__heading { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 12px; }
 .setting output { color: var(--gold); }
 .setting input[type="range"] { width: 100%; accent-color: var(--gold); cursor: pointer; }

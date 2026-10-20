@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { DEFAULT_AVATAR_ID, isAvatarId } from '../lib/avatars';
 import { clamp } from '../lib/position';
 import type { Point } from '../lib/position';
 
@@ -21,6 +22,7 @@ type PersistedState = {
   size: number;
   opacity: number;
   greetingEnabled: boolean;
+  avatarId: string;
 };
 
 type AppState = PersistedState & {
@@ -32,6 +34,7 @@ type AppState = PersistedState & {
   setSize: (size: number) => void;
   setOpacity: (opacity: number) => void;
   setGreetingEnabled: (enabled: boolean) => void;
+  setAvatarId: (id: string) => void;
   openChat: () => void;
   closeChat: () => void;
   openSettings: (anchor: Point) => void;
@@ -61,6 +64,7 @@ export function sanitizePersisted(raw: unknown, defaults: PersistedState): Persi
     size: isFiniteNumber(data.size) ? clamp(data.size, SIZE_MIN, SIZE_MAX) : defaults.size,
     opacity: isFiniteNumber(data.opacity) ? clamp(data.opacity, OPACITY_MIN, OPACITY_MAX) : defaults.opacity,
     greetingEnabled: typeof data.greetingEnabled === 'boolean' ? data.greetingEnabled : defaults.greetingEnabled,
+    avatarId: isAvatarId(data.avatarId) ? data.avatarId : defaults.avatarId,
   };
 }
 
@@ -71,6 +75,7 @@ export const useAppStore = create<AppState>()(
       size: SIZE_DEFAULT,
       opacity: 1,
       greetingEnabled: true,
+      avatarId: DEFAULT_AVATAR_ID,
       chatOpen: false,
       settingsOpen: false,
       settingsAnchor: { x: 60, y: 70 },
@@ -85,6 +90,9 @@ export const useAppStore = create<AppState>()(
         if (isFiniteNumber(opacity)) set({ opacity: clamp(opacity, OPACITY_MIN, OPACITY_MAX) });
       },
       setGreetingEnabled: (greetingEnabled) => set({ greetingEnabled }),
+      setAvatarId: (avatarId) => {
+        if (isAvatarId(avatarId)) set({ avatarId });
+      },
       openChat: () =>
         set((state) => ({
           chatOpen: true,
@@ -113,6 +121,7 @@ export const useAppStore = create<AppState>()(
         size: state.size,
         opacity: state.opacity,
         greetingEnabled: state.greetingEnabled,
+        avatarId: state.avatarId,
       }),
       migrate: (persisted) => persisted as PersistedState,
       merge: (persisted, current) => ({ ...current, ...sanitizePersisted(persisted, current) }),
