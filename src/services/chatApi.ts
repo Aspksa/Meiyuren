@@ -1,36 +1,116 @@
 import type { Message } from '../store/useAppStore';
 
-async function parse<T>(response: Response): Promise<T> {
+export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number };
+export type MemoryFact = { id: string; content: string; createdAt: number };
+export type ChatMatch = Message & { conversationId: string };
+export type Exchange = { user: Message; assistant: Message };
+
+export async function parse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const body: unknown = await response.json().catch(() => null);
-    const detail = body && typeof body === 'object' && 'detail' in body ? String(body.detail) : '';
-    throw new Error(detail || 'Python-сервер недоступен. Запустите setup-python.cmd и перезапустите Meiyuren.cmd.');
+    const data: unknown = await response.json().catch(() => null);
+    const message = data && typeof data === 'object' && 'detail' in data ? data.detail : null;
+    throw new Error(typeof message === 'string' ? message : 'Python-сервер недоступен. Проверьте Meiyuren.cmd.');
   }
   return response.json() as Promise<T>;
 }
 
-export async function loadHistory(signal?: AbortSignal): Promise<Message[]> {
-  const response = await fetch('/api/chat/messages?limit=200', { cache: 'no-store', signal });
-  return (await parse<{ messages: Message[] }>(response)).messages;
+const headers = { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' };
+
+export async function loadHistory(conversationId = 'main', signal?: AbortSignal): Promise<Message[]> {
+  return (await parse<{ messages: Message[] }>(await fetch('/api/chat/messages?limit=200&conversationId=' + encodeURIComponent(conversationId),
+    { cache: 'no-store', signal }))).messages;
 }
 
-export async function sendMessage(text: string, requestId: string): Promise<{ user: Message; assistant: Message }> {
-  return parse(await fetch('/api/chat/messages', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ text, requestId }),
-  }));
-}
-
-export async function clearHistory(): Promise<void> {
-  await parse<{ deleted: number }>(await fetch('/api/chat/messages', { method: 'DELETE', headers: { 'X-Meiyuren-Client': '1' } }));
+export async function clearHistory(conversationId = 'main'): Promise<void> {
+  await parse(await fetch('/api/chat/messages?conversationId=' + encodeURIComponent(conversationId),
+    { method: 'DELETE', headers }));
 }
 
 export async function loadMemory(signal?: AbortSignal): Promise<string> {
-  const response = await fetch('/api/memory', { signal, cache: 'no-store' });
-  return (await parse<{ notes: string }>(response)).notes;
+  return (await parse<{ notes: string }>(await fetch('/api/memory', { signal, cache: 'no-store' }))).notes;
 }
 
 export async function saveMemory(notes: string): Promise<void> {
-  await parse(await fetch('/api/memory', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ notes }),
-  }));
+  await parse(await fetch('/api/memory', { method: 'PUT', headers, body: JSON.stringify({ notes }) }));
+}
+
+export async function getConversations(): Promise<Conversation[]> {
+  return (await parse<{ conversations: Conversation[] }>(await fetch('/api/conversations', { cache: 'no-store' }))).conversations;
+}
+
+export async function createConversation(title: string): Promise<Conversation> {
+  return parse(await fetch('/api/conversations', { method: 'POST', headers, body: JSON.stringify({ title }) }));
+}
+
+export async function renameConversation(id: string, title: string): Promise<void> {
+  await parse(await fetch('/api/conversations/' + encodeURIComponent(id), { method: 'PUT', headers, body: JSON.stringify({ title }) }));
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await parse(await fetch('/api/conversations/' + encodeURIComponent(id), { method: 'DELETE', headers }));
+}
+
+export async function searchChat(q: string, conversationId?: string): Promise<ChatMatch[]> {
+  const query = '?q=' + encodeURIComponent(q) + (conversationId ? '&conversationId=' + encodeURIComponent(conversationId) : '');
+  return (await parse<{ matches: ChatMatch[] }>(await fetch('/api/chat/search' + query, { cache: 'no-store' }))).matches;
+}
+
+export async function getMemoryFacts(): Promise<MemoryFact[]> {
+  return (await parse<{ facts: MemoryFact[] }>(await fetch('/api/memory/facts', { cache: 'no-store' }))).facts;
+}
+export async function addMemoryFact(content: string): Promise<MemoryFact> {
+  return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content }) }));
+}
+export async function removeMemoryFact(id: string): Promise<void> {
+  await parse(await fetch('/api/memory/facts/' + encodeURIComponent(id), { method: 'DELETE', headers }));
+}
+
+export async function consumeSSE(
+  stream: ReadableStream<Uint8Array>,
+  onDelta: (part: string) => void,
+): Promise<Exchange> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const frames = buffer.split(/\r?\n\r?\n/);
+      buffer = frames.pop() ?? '';
+      for (const frame of frames) {
+        const event = /^event:\s*(.+)$/m.exec(frame)?.[1]?.trim();
+        const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+        if (!data) continue;
+        const payload: unknown = JSON.parse(data);
+        if (event === 'delta' && payload && typeof payload === 'object' && 'text' in payload) {
+          const part = payload.text;
+          if (typeof part === 'string') onDelta(part);
+        } else if (event === 'error') {
+          const message = payload && typeof payload === 'object' && 'message' in payload ? payload.message : null;
+          throw new Error(typeof message === 'string' ? message : 'Ошибка потокового ответа.');
+        } else if (event === 'done') {
+          return payload as Exchange;
+        }
+      }
+    }
+    throw new Error('Поток завершился без подтверждения результата. Повтор того же запроса безопаснее нового.');
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+
+export async function streamMessage(
+  text: string, requestId: string, conversationId: string,
+  onDelta: (part: string) => void, signal?: AbortSignal,
+): Promise<Exchange> {
+  const response = await fetch('/api/chat/stream', {
+    method: 'POST', headers,
+    body: JSON.stringify({ text, requestId, conversationId }), signal, cache: 'no-store',
+  });
+  if (!response.ok) await parse(response);
+  if (!response.body) throw new Error('Браузер не поддерживает потоковый ответ.');
+  return consumeSSE(response.body, onDelta);
 }

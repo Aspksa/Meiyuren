@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
-import { clearHistory, loadMemory, saveMemory } from '../services/chatApi';
+import { addMemoryFact, clearHistory, getMemoryFacts, loadMemory, removeMemoryFact, saveMemory } from '../services/chatApi';
+import type { MemoryFact } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
 export function MemoryEditor({ active }: { active: boolean }) {
   const clearChat = useAppStore((s) => s.clearChat);
   const [notes, setNotes] = useState('');
+  const [facts, setFacts] = useState<MemoryFact[]>([]);
+  const [factDraft, setFactDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -14,6 +17,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
     const controller = new AbortController();
     setError('');
     setMessage('');
+    void getMemoryFacts().then((items) => { if (!controller.signal.aborted) setFacts(items); }).catch(() => undefined);
     void loadMemory(controller.signal).then((text) => {
       if (!controller.signal.aborted) setNotes(text);
     }).catch((cause: unknown) => {
@@ -35,7 +39,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   }
 
   async function eraseHistory() {
-    if (!window.confirm('Удалить всю историю переписки с этого компьютера?')) return;
+    if (!window.confirm('Очистить историю ОСНОВНОГО диалога? Другие диалоги сохранятся.')) return;
     setBusy(true);
     setError('');
     setMessage('');
@@ -46,6 +50,26 @@ export function MemoryEditor({ active }: { active: boolean }) {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось очистить историю');
     } finally { setBusy(false); }
+  }
+
+  async function addFact() {
+    if (!factDraft.trim()) return;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const fact = await addMemoryFact(factDraft.trim());
+      setFacts(items => [fact, ...items]);
+      setFactDraft('');
+      setMessage('Факт добавлен в память.');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Ошибка'); }
+    finally { setBusy(false); }
+  }
+
+  async function deleteFact(id: string) {
+    if (!window.confirm('Удалить выбранный факт памяти?')) return;
+    setBusy(true); setError('');
+    try { await removeMemoryFact(id); setFacts(items => items.filter(item => item.id !== id)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Ошибка удаления'); }
+    finally { setBusy(false); }
   }
 
   return (
@@ -62,6 +86,19 @@ export function MemoryEditor({ active }: { active: boolean }) {
         onChange={(event) => setNotes(event.target.value)}
         placeholder="Например: мне нравятся кошки..."
       />
+      <h3>Сохранённые факты</h3>
+      <p>Факты добавляются только вручную. В облачном режиме они могут передаваться Cloud.ru.</p>
+      <label htmlFor="memory-fact">Новый факт</label>
+      <input id="memory-fact" maxLength={500} value={factDraft} disabled={busy}
+        placeholder="Например: мою кошку зовут Мия"
+        onChange={event => setFactDraft(event.target.value)} />
+      <button type="button" disabled={busy || !factDraft.trim()} onClick={() => void addFact()}>＋ Сохранить факт</button>
+      {facts.length === 0 && <p>Сохранённых фактов пока нет.</p>}
+      <ul className="memory-facts">
+        {facts.map(fact => <li key={fact.id}><span>{fact.content}</span>
+          <button type="button" aria-label="Удалить факт" disabled={busy}
+            onClick={() => void deleteFact(fact.id)}>×</button></li>)}
+      </ul>
       <div className="memory-editor__actions">
         <button type="button" disabled={busy} onClick={() => { void save(); }}>Сохранить память</button>
         <button type="button" disabled={busy} onClick={() => { void eraseHistory(); }}>Очистить историю чата</button>

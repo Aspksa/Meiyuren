@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { deleteCloudKey, getCloudModels, getCloudSettings, putCloudKey, putCloudSettings } from '../services/cloudApi';
+import { deleteCloudKey, getCloudDiagnostics, getCloudModels, getCloudSettings, putCloudKey, putCloudSettings } from '../services/cloudApi';
+import { streamMessage } from '../services/chatApi';
+import type { CloudDiagnostics } from '../services/cloudApi';
 
 export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [keyInput, setKeyInput] = useState('');
@@ -11,12 +13,16 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [diagnostics, setDiagnostics] = useState<CloudDiagnostics | null>(null);
+  const [testAnswer, setTestAnswer] = useState('');
 
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
     setError('');
     setMessage('');
+    setDiagnostics(null);
+    setTestAnswer('');
     setModels([]);
     setModelsLoaded(false);
     setKeyInput('');
@@ -50,6 +56,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
       setHasKey(true);
       setEnabled(false);
       setModels([]);
+      setDiagnostics(null);
       setModelsLoaded(false);
       return 'Ключ сохранён в системном хранилище учётных данных.';
     });
@@ -83,6 +90,24 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
       await putCloudSettings(model, nextEnabled);
       setEnabled(nextEnabled);
       return nextEnabled ? 'Cloud.ru выбран для ответов Мэйюрэн.' : 'Облачный чат выключен; работают локальные демо-ответы.';
+    });
+  }
+
+  async function diagnose() {
+    await action(async () => {
+      const result = await getCloudDiagnostics();
+      setDiagnostics(result);
+      return result.message || (result.reachable ? 'Связь с Cloud.ru работает.' : 'Нет подключения.');
+    });
+  }
+
+  async function paidTest() {
+    if (!window.confirm('Отправить платный тестовый запрос к выбранной модели Cloud.ru? Тест сохранится в основном чате.')) return;
+    await action(async () => {
+      setTestAnswer('');
+      const result = await streamMessage('Ответь одним словом: привет', crypto.randomUUID(), 'main',
+        part => setTestAnswer(value => value + part));
+      return 'Тест завершён: ' + result.assistant.text.slice(0, 120);
     });
   }
 
@@ -132,6 +157,19 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
           <button type="button" className="cloud-settings__primary" disabled={busy || !hasKey || !verifiedModel} onClick={() => void saveSettings(true)}>Применить модель</button>
           <button type="button" disabled={busy || !enabled} onClick={() => void saveSettings(false)}>Выключить Cloud.ru</button>
         </div>
+        <div className="cloud-settings__separator" />
+        <p className="cloud-settings__hint">Диагностика проверяет доступность списка моделей и выбранной модели. Она не запускает генерацию и не расходует токены чата.</p>
+        <div className="cloud-settings__actions">
+          <button type="button" disabled={busy || !hasKey} onClick={() => void diagnose()}>Проверить соединение</button>
+          <button type="button" disabled={busy || !enabled || !hasKey}
+            onClick={() => void paidTest()}>Тест ответа (платно)</button>
+        </div>
+        {diagnostics && <div className="cloud-settings__diagnostic" role="status">
+          <p>Соединение: {diagnostics.reachable ? 'доступно' : 'не подтверждено'}</p>
+          <p>Выбранная модель: {diagnostics.modelAvailable ? 'доступна' : 'не найдена'}</p>
+          <p>Моделей: {diagnostics.modelsCount} · Задержка: {diagnostics.latencyMs ?? '—'} мс</p>
+        </div>}
+        {testAnswer && <p className="cloud-settings__success">Ответ теста: {testAnswer}</p>}
         {error && <p className="cloud-settings__error" role="alert">{error}</p>}
         {message && <p className="cloud-settings__success" role="status">{message}</p>}
         <div className="cloud-settings__footer">

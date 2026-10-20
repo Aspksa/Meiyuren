@@ -13,3 +13,4 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>,
 );
 import './cloud-audit.css';
+import './chat-v06.css';
