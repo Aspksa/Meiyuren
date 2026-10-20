@@ -114,7 +114,8 @@ def request_error(exc: Exception) -> CloudError:
     return CloudError("Не удалось подключиться к Cloud.ru. Проверьте интернет и доступность сервиса.", 502)
 
 
-async def available_models() -> list[str]:
+async def model_entries() -> list[dict]:
+    """Читаем сведения о доступных моделях без генерации и без передачи ключа наружу."""
     secret = required_key()
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
@@ -127,16 +128,73 @@ async def available_models() -> list[str]:
         entries = data.get("data") if isinstance(data, dict) else None
         if not isinstance(entries, list):
             raise CloudError("Cloud.ru вернул неожиданный формат списка моделей.", 502)
-        return sorted({
-            model["id"] for model in entries[:1000]
-            if isinstance(model, dict) and is_chat_model(model)
-        })[:300]
+        return [entry for entry in entries[:1000] if isinstance(entry, dict)]
     except CloudError:
         raise
     except (ValueError, TypeError):
         raise CloudError("Cloud.ru вернул некорректный ответ со списком моделей.", 502) from None
     except httpx.HTTPError as exc:
         raise request_error(exc) from None
+
+
+async def available_models() -> list[str]:
+    return sorted({
+        entry["id"] for entry in await model_entries() if is_chat_model(entry)
+    })[:300]
+
+
+def evaluate_compatibility(model: str, entry: dict | None) -> dict:
+    """Только доказуемые ограничения. Отсутствие metadata НЕ означает поддержку."""
+    issues = []
+    unknown = []
+    if entry is None:
+        issues.append("Модель отсутствует в списке доступных для этого API-ключа.")
+    elif not is_chat_model(entry):
+        issues.append("Это не текстовая чат-модель (тип или идентификатор несовместим).")
+
+    metadata = entry.get("metadata") if isinstance(entry, dict) else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    maximum = entry.get("max_model_len") if isinstance(entry, dict) else None
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+        maximum = None
+        unknown.append("Максимальный контекст модели не указан в API.")
+    elif maximum <= MAX_REPLY_TOKENS:
+        issues.append("Окно контекста меньше или равно лимиту ответа — уменьшите параметры генерации.")
+    else:
+        unknown.append("Размер истории в токенах оценивается приблизительно; точный контекст требует проверки генерацией.")
+
+    def explicit(name: str):
+        return entry.get(name, metadata.get(name)) if isinstance(entry, dict) else None
+
+    streaming = explicit("supports_streaming")
+    if streaming is False:
+        issues.append("Модель явно не поддерживает streaming.")
+    elif streaming is not True:
+        unknown.append("Поддержка stream: true не указана в метаданных API.")
+
+    parameters = explicit("supported_parameters")
+    if isinstance(parameters, list) and all(isinstance(x, str) for x in parameters):
+        allowed = set(parameters)
+        if "temperature" not in allowed:
+            issues.append("В метаданных отсутствует temperature среди поддерживаемых параметров.")
+        if "max_tokens" not in allowed and "max_completion_tokens" not in allowed:
+            issues.append("В метаданных отсутствует параметр ограничения длины ответа.")
+    else:
+        unknown.append("Cloud.ru не сообщает поддерживаемые моделью параметры temperature и max_tokens.")
+
+    status = "incompatible" if issues else "unknown" if unknown else "compatible"
+    return {
+        "model": model, "status": status, "issues": issues, "warnings": unknown,
+        "maxModelLen": maximum, "checkedWithoutGeneration": True,
+    }
+
+
+async def model_compatibility(model: str) -> dict:
+    if not valid_model(model):
+        raise CloudError("Некорректный идентификатор модели.", 422)
+    entries = await model_entries()
+    selected = next((row for row in entries if row.get("id") == model), None)
+    return evaluate_compatibility(model, selected)
 
 
 async def generate_cloud_reply(model: str, history: list[dict], notes: str, user_text: str) -> str:
@@ -199,75 +257,95 @@ def messages_payload(model: str, history: list[dict], notes: str, user_text: str
 
 
 async def stream_cloud_reply(model: str, history: list[dict], notes: str, user_text: str):
-    """Итератор текстовых delta из OpenAI-совместимого SSE Cloud.ru.
+    """Чтение SSE Cloud.ru без автоповторов и без ложного завершения при обрыве.
 
-    Вызывающая сторона решает, когда записывать ответ в SQLite: только после [DONE].
-    Если клиент отключится, сетевой запрос закрывается вместе с async context manager.
+    12 секунд — подключение, 60 секунд — максимальная пауза между данными,
+    180 секунд — общий deadline; все числа ограничивают зависание, не расходы.
     """
-    import json
     import asyncio
+    import json
 
     payload = {**messages_payload(model, history, notes, user_text), "stream": True}
     secret = required_key()
     seen = 0
+    has_visible_text = False
     finish_reason = None
     ended = False
+    events = 0
+    timeout = httpx.Timeout(connect=12.0, read=60.0, write=15.0, pool=12.0)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=12.0), follow_redirects=False) as client:
-            async with client.stream(
-                "POST", BASE_URL + "/chat/completions",
-                headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
-                json=payload,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line.startswith("data:"):
-                        continue
-                    chunk = line[5:].strip()
-                    if chunk == "[DONE]":
-                        ended = True
-                        break
-                    if not chunk:
-                        continue
-                    packet = json.loads(chunk)
-                    if not isinstance(packet, dict):
-                        raise CloudError("Неожиданный формат потокового ответа Cloud.ru.", 502)
-                    choices = packet.get("choices")
-                    if not choices:
-                        continue
-                    choice = choices[0]
-                    if not isinstance(choice, dict):
-                        raise CloudError("Неожиданный формат потокового ответа Cloud.ru.", 502)
-                    if choice.get("finish_reason"):
-                        finish_reason = choice["finish_reason"]
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content") if isinstance(delta, dict) else None
-                    if isinstance(piece, str) and piece:
-                        if seen + len(piece) > 8000:
-                            piece = piece[: max(0, 8000 - seen)]
-                            finish_reason = "length"
-                        seen += len(piece)
-                        if piece:
-                            yield piece
-                        if seen >= 8000:
+        async with asyncio.timeout(180):
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                async with client.stream(
+                    "POST", BASE_URL + "/chat/completions",
+                    headers={"Authorization": f"Bearer {secret}", "Content-Type": "application/json"},
+                    json=payload,
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if len(line) > 65536:
+                            raise CloudError("SSE-событие Cloud.ru слишком большое; поток прерван.", 502)
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
                             ended = True
                             break
+                        if not chunk:
+                            continue
+                        events += 1
+                        if events > 10000:
+                            raise CloudError("Превышено количество SSE-событий Cloud.ru.", 502)
+                        try:
+                            packet = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            raise CloudError("Cloud.ru прислал повреждённое SSE-событие.", 502) from None
+                        if not isinstance(packet, dict):
+                            raise CloudError("Cloud.ru вернул неожиданный формат SSE.", 502)
+                        if packet.get("error"):
+                            # Не раскрываем тело ошибки поставщика, оно может содержать секреты.
+                            raise CloudError("Cloud.ru сообщил об ошибке внутри SSE-потока.", 502)
+                        choices = packet.get("choices")
+                        if choices == []:
+                            continue  # допустимый usage-only chunk
+                        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                            raise CloudError("Cloud.ru вернул некорректные choices в SSE.", 502)
+                        choice = choices[0]
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+                        delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            raise CloudError("Cloud.ru вернул некорректную delta в SSE.", 502)
+                        piece = delta.get("content")
+                        if piece is not None and not isinstance(piece, str):
+                            raise CloudError("Cloud.ru вернул нетекстовый контент для текстового чата.", 502)
+                        if piece:
+                            if seen + len(piece) > 8000:
+                                raise CloudError("Ответ превышает локальный лимит 8000 символов; поток остановлен.", 502)
+                            seen += len(piece)
+                            if piece.strip():
+                                has_visible_text = True
+                            yield piece
     except asyncio.CancelledError:
         raise
+    except TimeoutError:
+        raise CloudError("Cloud.ru не завершил ответ за 180 секунд; повторный платный запрос запрещён.", 504) from None
     except CloudError:
         raise
+    except httpx.TimeoutException:
+        raise CloudError("Cloud.ru не прислал данные в течение 60 секунд. Запрос мог быть оплачен.", 504) from None
     except httpx.HTTPError as exc:
-        # Переиспользуем диагностику 401/403/402/404/429 и тайм-аутов.
         raise request_error(exc) from None
     except (ValueError, TypeError, KeyError, IndexError):
-        raise CloudError("Поток Cloud.ru прерван или имеет неверный формат. Повтор может привести к оплате.", 502) from None
+        raise CloudError("Cloud.ru прервал поток или вернул некорректный ответ.", 502) from None
+
     if not ended:
-        raise CloudError("Cloud.ru завершил соединение без подтверждения окончания ответа. Повтор не рекомендуется.", 502)
-    if seen == 0:
-        raise CloudError("Cloud.ru не вернул текст. Возможно, модель не поддерживает потоковый чат.", 502)
+        raise CloudError("Cloud.ru закрыл соединение без [DONE]. Ответ не сохранён; автоматического повтора нет.", 502)
+    if not has_visible_text:
+        raise CloudError("Cloud.ru завершил поток без текстового ответа. Проверьте выбранную модель.", 502)
     if finish_reason == "length":
-        yield "\n\n[Ответ оборван ограничением длины.]"
+        yield "\n\n[Ответ оборван лимитом длины.]"
 
 
 async def diagnose_connection(model: str) -> dict:
