@@ -1,5 +1,7 @@
 """Локальный FastAPI API: чат SQLite, память и Cloud.ru Foundation Models."""
 from pathlib import Path
+from contextlib import asynccontextmanager
+import logging
 import asyncio
 import json
 from urllib.parse import urlsplit
@@ -11,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import cloud, db, history
+from .memory_engine import MemoryEngine, SECRET
 from .replies import generate_reply
 
 
@@ -30,6 +33,26 @@ class ConversationInput(BaseModel):
 
 class FactInput(BaseModel):
     content: str = Field(min_length=1, max_length=500)
+    cloudAllowed: bool = False
+
+
+class FactUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=500)
+    cloudAllowed: bool = False
+    revision: int = Field(ge=1)
+    expiresAt: int | None = None
+
+
+class MemoryPolicyInput(BaseModel):
+    allow_cloud_notes: bool | None = None
+    allow_cloud_facts: bool | None = None
+    auto_extract: bool | None = None
+    auto_summaries: bool | None = None
+
+
+class MemoryReviewInput(BaseModel):
+    approve: bool
+    cloudAllowed: bool = False
 
 
 class CloudKeyInput(BaseModel):
@@ -43,9 +66,36 @@ class CloudSettingsInput(BaseModel):
 
 def create_app(db_path: Path | None = None) -> FastAPI:
     database = db_path if db_path is not None else db.default_database()
+    existed = database.exists()
     db.initialise(database)
     history.initialise(database)
-    app = FastAPI(title="Meiyuren Local API", version="0.6.0", docs_url=None, redoc_url=None)
+    engine = MemoryEngine(database)
+    engine.initialize(backup_existing=existed)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        stop = asyncio.Event()
+
+        async def worker():
+            while not stop.is_set():
+                try:
+                    await asyncio.to_thread(engine.process_pending, 8)
+                except Exception:
+                    logging.getLogger(__name__).exception("Memory worker: локальная задача завершилась с ошибкой")
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=3)
+                except asyncio.TimeoutError:
+                    pass
+
+        task = asyncio.create_task(worker())
+        try:
+            yield
+        finally:
+            stop.set()
+            await task
+
+    app = FastAPI(title="Meiyuren Local API", version="0.7.0", docs_url=None, redoc_url=None,
+                  lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
@@ -86,14 +136,16 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not history.ensure_conversation(database, conv_id):
             raise HTTPException(status_code=404, detail="Диалог не найден.")
 
-    def memory_context() -> str:
-        notes = db.get_memory(database)["notes"]
-        facts = history.list_facts(database)
-        if facts:
-            notes += "\\nСохранённые вручную факты:\\n" + "\\n".join(
-                "- " + fact["content"] for fact in facts[:20]
-            )
-        return notes
+    def memory_context(query: str, conversation_id: str, cloud_mode: bool) -> str:
+        return engine.prepare(query, conversation_id, cloud_mode)
+
+    def observed(exchange: dict, conv_id: str) -> dict:
+        try:
+            engine.observe(exchange, conv_id)
+        except Exception:
+            # Ошибка индексации не должна превращать уже оплаченный Cloud-ответ в ошибку.
+            logging.getLogger(__name__).exception("Memory observe: запись в очередь не удалась")
+        return exchange
 
     @app.get("/api/chat/messages")
     def list_messages(
@@ -109,8 +161,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not text:
             raise HTTPException(status_code=422, detail="Сообщение не может быть пустым")
         require_conversation(body.conversationId)
-        notes = memory_context()
         settings = db.cloud_config(database)
+        notes = memory_context(text, body.conversationId, settings["enabled"])
         if settings["enabled"]:
             if not body.requestId:
                 raise HTTPException(status_code=422, detail="Для Cloud.ru требуется идентификатор запроса.")
@@ -128,18 +180,21 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             previous = history.messages(database, body.conversationId, limit=12)
             try:
                 response = await cloud.generate_cloud_reply(settings["model"], previous, notes, text)
-                return history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response)
+                result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response)
+                return observed(result, body.conversationId)
             except Exception:
                 # Сохраняем резервирование: повтор с тем же ID не создаст второй платный вызов.
                 db.fail_request(database, body.requestId)
                 raise
         response = generate_reply(text, notes)
-        return history.append_exchange(database, text, response, body.conversationId)
+        return observed(history.append_exchange(database, text, response, body.conversationId), body.conversationId)
 
     @app.delete("/api/chat/messages")
     def remove_messages(conversationId: str = Query(default="main", max_length=40)) -> dict:
         require_conversation(conversationId)
-        return {"deleted": history.clear_messages(database, conversationId)}
+        deleted = history.clear_messages(database, conversationId)
+        engine.purge_conversation(conversationId)
+        return {"deleted": deleted}
 
     @app.post("/api/chat/stream")
     async def stream_message(body: ChatInput):
@@ -159,8 +214,9 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             completed = False
             try:
                 if not settings["enabled"]:
-                    result = history.append_exchange(
-                        database, text, generate_reply(text, memory_context()), body.conversationId)
+                    result = observed(history.append_exchange(
+                        database, text, generate_reply(text, memory_context(text, body.conversationId, False)),
+                        body.conversationId), body.conversationId)
                     yield event("delta", {"text": result["assistant"]["text"]})
                     yield event("done", result)
                     return
@@ -177,7 +233,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 previous = history.messages(database, body.conversationId, limit=12)
                 tokens = []
                 async for piece in cloud.stream_cloud_reply(
-                    settings["model"], previous, memory_context(), text
+                    settings["model"], previous,
+                    memory_context(text, body.conversationId, True), text
                 ):
                     tokens.append(piece)
                     yield event("delta", {"text": piece})
@@ -185,6 +242,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 result = history.complete_cloud_exchange(
                     database, body.requestId, body.conversationId, text, answer)
                 completed = True
+                observed(result, body.conversationId)
                 yield event("done", result)
             except asyncio.CancelledError:
                 raise
@@ -225,6 +283,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             raise HTTPException(409, detail="Основной диалог нельзя удалить; можно очистить его историю.")
         if not history.delete_conversation(database, conv_id):
             raise HTTPException(404, detail="Диалог не найден или в нём ещё выполняется запрос.")
+        engine.purge_conversation(conv_id)
         return {"success": True}
 
     @app.get("/api/chat/search")
@@ -235,22 +294,89 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/memory/facts")
     def list_memory_facts():
-        return {"facts": history.list_facts(database)}
+        return {"facts": engine.items()}
 
     @app.post("/api/memory/facts", status_code=201)
     def create_memory_fact(body: FactInput):
-        if not body.content.strip():
-            raise HTTPException(422, detail="Факт не должен быть пустым.")
         try:
-            return history.add_fact(database, body.content.strip())
+            return engine.add_manual(body.content, cloud_allowed=body.cloudAllowed)
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from None
+
+    @app.put("/api/memory/facts/{fact_id}")
+    def update_memory_fact(fact_id: str, body: FactUpdate):
+        try:
+            item = engine.edit(fact_id, content=body.content, cloud_allowed=body.cloudAllowed,
+                               revision=body.revision, expires_at=body.expiresAt)
         except ValueError as exc:
             raise HTTPException(409, detail=str(exc)) from None
+        if item is None:
+            raise HTTPException(404, detail="Воспоминание не найдено.")
+        return item
+
+    @app.get("/api/memory/facts/{fact_id}/explain")
+    def explain_memory_fact(fact_id: str):
+        info = engine.explain(fact_id)
+        if info is None:
+            raise HTTPException(404, detail="Воспоминание не найдено.")
+        return info
 
     @app.delete("/api/memory/facts/{fact_id}")
     def delete_memory_fact(fact_id: str):
-        if not history.delete_fact(database, fact_id):
-            raise HTTPException(404, detail="Факт не найден.")
+        if not engine.forget(fact_id):
+            raise HTTPException(404, detail="Воспоминание не найдено.")
         return {"success": True}
+
+    @app.get("/api/memory/candidates")
+    def memory_candidates():
+        return {"candidates": engine.candidates()}
+
+    @app.post("/api/memory/candidates/{candidate_id}/review")
+    def review_memory_candidate(candidate_id: str, body: MemoryReviewInput):
+        try:
+            result=engine.review(candidate_id,body.approve,body.cloudAllowed)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
+        if result is None:
+            raise HTTPException(404,detail="Предложение не найдено.")
+        return result
+
+    @app.get("/api/memory/summaries")
+    def memory_summaries():
+        return {"summaries": engine.summaries()}
+
+    @app.post("/api/memory/summaries/{conversation_id}/review")
+    def review_memory_summary(conversation_id: str, body: MemoryReviewInput):
+        try:
+            changed=engine.review_summary(conversation_id,body.approve,body.cloudAllowed)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
+        if not changed:
+            raise HTTPException(404,detail="Выписка не найдена.")
+        return {"success": True}
+
+    @app.get("/api/memory/status")
+    def memory_status():
+        return engine.status()
+
+    @app.get("/api/memory/policy")
+    def memory_policy():
+        return engine.policy()
+
+    @app.put("/api/memory/policy")
+    def update_memory_policy(body: MemoryPolicyInput):
+        updates=body.model_dump(exclude_none=True)
+        if updates.get("allow_cloud_notes") and SECRET.search(db.get_memory(database)["notes"]):
+            raise HTTPException(422,detail="Заметка содержит потенциальный секрет. Удалите его перед передачей Cloud.ru.")
+        try:
+            return engine.set_policy(updates)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
+
+    @app.post("/api/memory/process")
+    def run_local_memory_jobs():
+        # Только локальная обработка; без сетевого запроса к Cloud.ru.
+        return {"processed": engine.process_pending(30), **engine.status()}
 
     @app.get("/api/memory")
     def read_memory() -> dict:
@@ -258,6 +384,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.put("/api/memory")
     def save_memory(body: MemoryInput) -> dict:
+        if engine.policy()["allow_cloud_notes"] and SECRET.search(body.notes):
+            raise HTTPException(422,detail="Нельзя передавать заметку с вероятным секретом Cloud.ru.")
         return db.put_memory(database, body.notes.strip())
 
     @app.get("/api/cloud/settings")

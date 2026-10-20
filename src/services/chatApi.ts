@@ -1,7 +1,26 @@
 import type { Message } from '../store/useAppStore';
 
 export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number };
-export type MemoryFact = { id: string; content: string; createdAt: number };
+export type MemoryFact = {
+  id: string; content: string; createdAt: number; updatedAt: number;
+  kind: string; status: string; sourceMessageId: string | null; conversationId: string;
+  cloudAllowed: boolean; expiresAt: number | null; revision: number;
+};
+export type MemoryCandidate = {
+  id: string; content: string; sourceMessageId: string; conversationId: string; createdAt: number;
+};
+export type MemorySummary = {
+  conversationId: string; content: string; status: string; cloudAllowed: boolean; updatedAt: number;
+};
+export type MemoryPolicy = {
+  allow_cloud_notes: boolean; allow_cloud_facts: boolean;
+  auto_extract: boolean; auto_summaries: boolean;
+};
+export type MemoryStatus = { facts: number; pending: number; jobs: number; summaries: number; policy: MemoryPolicy };
+export type MemoryExplanation = {
+  item: MemoryFact; source: { id: string; text: string } | null;
+  sourceAvailable: boolean; revisions: { revision: number; content: string; changedAt: number }[];
+};
 export type ChatMatch = Message & { conversationId: string };
 export type Exchange = { user: Message; assistant: Message };
 
@@ -58,9 +77,52 @@ export async function searchChat(q: string, conversationId?: string): Promise<Ch
 export async function getMemoryFacts(): Promise<MemoryFact[]> {
   return (await parse<{ facts: MemoryFact[] }>(await fetch('/api/memory/facts', { cache: 'no-store' }))).facts;
 }
-export async function addMemoryFact(content: string): Promise<MemoryFact> {
-  return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content }) }));
+export async function addMemoryFact(content: string, cloudAllowed = false): Promise<MemoryFact> {
+  return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content, cloudAllowed }) }));
 }
+
+export async function editMemoryFact(item: MemoryFact, changes: { content: string; cloudAllowed: boolean; expiresAt?: number | null }): Promise<MemoryFact> {
+  return parse(await fetch('/api/memory/facts/' + encodeURIComponent(item.id), {
+    method: 'PUT', headers, body: JSON.stringify({ ...changes, revision: item.revision }),
+  }));
+}
+
+export async function explainMemoryFact(id: string): Promise<MemoryExplanation> {
+  return parse(await fetch('/api/memory/facts/' + encodeURIComponent(id) + '/explain', { cache: 'no-store' }));
+}
+
+export async function getMemoryCandidates(): Promise<MemoryCandidate[]> {
+  return (await parse<{ candidates: MemoryCandidate[] }>(await fetch('/api/memory/candidates', { cache: 'no-store' }))).candidates;
+}
+
+export async function reviewMemoryCandidate(id: string, approve: boolean, cloudAllowed = false): Promise<void> {
+  await parse(await fetch('/api/memory/candidates/' + encodeURIComponent(id) + '/review', {
+    method: 'POST', headers, body: JSON.stringify({ approve, cloudAllowed }),
+  }));
+}
+
+export async function getMemorySummaries(): Promise<MemorySummary[]> {
+  return (await parse<{ summaries: MemorySummary[] }>(await fetch('/api/memory/summaries', { cache: 'no-store' }))).summaries;
+}
+
+export async function reviewMemorySummary(conversationId: string, approve: boolean, cloudAllowed = false): Promise<void> {
+  await parse(await fetch('/api/memory/summaries/' + encodeURIComponent(conversationId) + '/review', {
+    method: 'POST', headers, body: JSON.stringify({ approve, cloudAllowed }),
+  }));
+}
+
+export async function getMemoryStatus(): Promise<MemoryStatus> {
+  return parse(await fetch('/api/memory/status', { cache: 'no-store' }));
+}
+
+export async function changeMemoryPolicy(changes: Partial<MemoryPolicy>): Promise<MemoryPolicy> {
+  return parse(await fetch('/api/memory/policy', { method: 'PUT', headers, body: JSON.stringify(changes) }));
+}
+
+export async function processMemory(): Promise<MemoryStatus> {
+  return parse(await fetch('/api/memory/process', { method: 'POST', headers }));
+}
+
 export async function removeMemoryFact(id: string): Promise<void> {
   await parse(await fetch('/api/memory/facts/' + encodeURIComponent(id), { method: 'DELETE', headers }));
 }

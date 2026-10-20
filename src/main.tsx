@@ -14,3 +14,5 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 );
 import './cloud-audit.css';
 import './chat-v06.css';
+
+import './memory-core.css';

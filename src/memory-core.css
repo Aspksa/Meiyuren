@@ -1,0 +1,16 @@
+.memory-core{overflow-y:auto;max-height:min(70vh,600px);scrollbar-width:thin}
+.memory-core h3{margin:16px 0 9px}
+.memory-core__statistics{font-size:11px;color:#f3d7a9;border:1px solid #dbc48f44;border-radius:9px;padding:10px}
+.memory-core__policy{border:1px solid #d6aa754f;border-radius:10px;padding:8px 10px;margin:10px 0}
+.memory-core__policy legend{font-size:12px;color:#eddbbb;padding:0 5px}
+.memory-core__policy label{display:flex;align-items:flex-start;gap:7px;line-height:1.4;margin:8px 0;font-size:11px}
+.memory-core__policy input{flex:none;width:15px;height:15px;accent-color:#d6aa75}
+.memory-core__list{padding:0;margin:6px 0 12px;list-style:none;max-height:230px;overflow:auto}
+.memory-core__list li{padding:9px 4px;border-bottom:1px solid #d9b77a33;display:flex;flex-direction:column;gap:6px;font-size:11px;overflow-wrap:anywhere}
+.memory-core__list small{display:block;color:#bdad96;font-size:10px;padding-top:4px}
+.memory-core__list li>div{display:flex;gap:5px;flex-wrap:wrap}
+.memory-core__list button,.memory-core>button,.memory-core__explanation button{background:#efd3a31a;border:1px solid #d7b37c55;border-radius:7px;padding:5px 8px;color:#f0d8ac;font-size:10px;cursor:pointer}
+.memory-core__list button:disabled,.memory-core>button:disabled{opacity:.5;cursor:not-allowed}
+.memory-core__summary{white-space:pre-wrap}
+.memory-core__explanation{margin:8px 0;padding:12px;border:1px solid #d7b37c77;border-radius:10px;font-size:11px;color:#f3d7aa;overflow-wrap:anywhere}
+.memory-core__explanation p{margin:6px 0;white-space:pre-wrap}
