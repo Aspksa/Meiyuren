@@ -7,6 +7,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
   const [model, setModel] = useState('');
   const [enabled, setEnabled] = useState(false);
   const [models, setModels] = useState<string[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -17,6 +18,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
     setError('');
     setMessage('');
     setModels([]);
+    setModelsLoaded(false);
     setKeyInput('');
     setBusy(true);
     void getCloudSettings(controller.signal).then((state) => {
@@ -47,6 +49,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
       setKeyInput('');
       setHasKey(true);
       setModels([]);
+      setModelsLoaded(false);
       return 'Ключ сохранён в системном хранилище учётных данных.';
     });
   }
@@ -59,6 +62,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
       setHasKey(false);
       setEnabled(false);
       setModels([]);
+      setModelsLoaded(false);
       return 'Ключ удалён, облачный чат выключен.';
     });
   }
@@ -67,6 +71,8 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
     await action(async () => {
       const available = await getCloudModels();
       setModels(available);
+      setModelsLoaded(true);
+      if (model && !available.includes(model)) setModel('');
       return available.length ? 'Подключение работает. Доступно моделей: ' + available.length : 'Подключение установлено, но доступных моделей не найдено.';
     });
   }
@@ -80,6 +86,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
   }
 
   const available = model && !models.includes(model) ? [model, ...models] : models;
+  const verifiedModel = modelsLoaded && models.includes(model);
   return (
     <section className="cloud-settings" role="dialog" aria-label="Настройки Cloud.ru">
       <header className="cloud-settings__header">
@@ -119,9 +126,9 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
           <option value="">Выберите модель</option>
           {available.map((id) => <option key={id} value={id}>{id}</option>)}
         </select>
-        <p className="cloud-settings__hint">Получите список по своему ключу. Для чата выбирайте текстовую LLM, а не embedding или audio.</p>
+        <p className="cloud-settings__hint">Для включения облачного чата сначала загрузите список моделей с текущим ключом и выберите доступную текстовую модель. Модели embedding и audio исключаются.</p>
         <div className="cloud-settings__actions">
-          <button type="button" className="cloud-settings__primary" disabled={busy || !hasKey || !model} onClick={() => void saveSettings(true)}>Применить модель</button>
+          <button type="button" className="cloud-settings__primary" disabled={busy || !hasKey || !verifiedModel} onClick={() => void saveSettings(true)}>Применить модель</button>
           <button type="button" disabled={busy || !enabled} onClick={() => void saveSettings(false)}>Выключить Cloud.ru</button>
         </div>
         {error && <p className="cloud-settings__error" role="alert">{error}</p>}
