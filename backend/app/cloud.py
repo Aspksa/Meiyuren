@@ -160,8 +160,8 @@ def evaluate_compatibility(model: str, entry: dict | None) -> dict:
         unknown.append("Максимальный контекст модели не указан в API.")
     elif maximum <= MAX_REPLY_TOKENS:
         issues.append("Окно контекста меньше или равно лимиту ответа — уменьшите параметры генерации.")
-    else:
-        unknown.append("Размер истории в токенах оценивается приблизительно; точный контекст требует проверки генерацией.")
+    elif maximum < 12000:
+        unknown.append("Контекст может быть ограничен: объём истории оценивается по символам, а не токенам.")
 
     def explicit(name: str):
         return entry.get(name, metadata.get(name)) if isinstance(entry, dict) else None
@@ -177,8 +177,11 @@ def evaluate_compatibility(model: str, entry: dict | None) -> dict:
         allowed = set(parameters)
         if "temperature" not in allowed:
             issues.append("В метаданных отсутствует temperature среди поддерживаемых параметров.")
-        if "max_tokens" not in allowed and "max_completion_tokens" not in allowed:
-            issues.append("В метаданных отсутствует параметр ограничения длины ответа.")
+        if "max_tokens" not in allowed:
+            if "max_completion_tokens" in allowed:
+                issues.append("Модель принимает max_completion_tokens, а текущий чат отправляет max_tokens.")
+            else:
+                issues.append("Модель не заявляет поддержку используемого параметра max_tokens.")
     else:
         unknown.append("Cloud.ru не сообщает поддерживаемые моделью параметры temperature и max_tokens.")
 
