@@ -19,11 +19,15 @@ export function Avatar() {
   const openChat = useAppStore((s) => s.openChat);
   const openSettings = useAppStore((s) => s.openSettings);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  const [dragging, setDragging] = useState(false);
+  // Во время перетаскивания позиция живёт локально и попадает в стор (и localStorage) один раз, в конце.
+  const [dragPosition, setDragPosition] = useState<Point | null>(null);
   const drag = useRef<Drag | null>(null);
-  const visualSize = Math.min(size, Math.max(120, viewport.width - 16), Math.max(120, viewport.height - 16));
+  const dragging = dragPosition !== null;
+  // На телефоне аватар не должен закрывать собой всю страницу.
+  const maxForViewport = viewport.width < 600 ? viewport.width * 0.6 : viewport.width - 16;
+  const visualSize = Math.round(Math.min(size, Math.max(120, maxForViewport), Math.max(120, viewport.height - 16)));
   const actualPosition = boundPosition(
-    position ?? startingPosition(visualSize, viewport.width, viewport.height),
+    dragPosition ?? position ?? startingPosition(visualSize, viewport.width, viewport.height),
     visualSize,
     viewport.width,
     viewport.height,
@@ -35,14 +39,9 @@ export function Avatar() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  useEffect(() => {
-    if (position && (position.x !== actualPosition.x || position.y !== actualPosition.y)) {
-      setPosition(actualPosition);
-    }
-  }, [actualPosition.x, actualPosition.y, position, setPosition]);
-
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
+    // Ctrl+клик на macOS — это правый клик: его обрабатывает onContextMenu.
+    if (event.button !== 0 || event.ctrlKey) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = {
@@ -60,8 +59,7 @@ export function Avatar() {
     const dy = event.clientY - start.mouseOrigin.y;
     if (!start.moved && Math.hypot(dx, dy) < 7) return;
     start.moved = true;
-    setDragging(true);
-    setPosition(boundPosition(
+    setDragPosition(boundPosition(
       { x: start.avatarOrigin.x + dx, y: start.avatarOrigin.y + dy },
       visualSize,
       viewport.width,
@@ -76,7 +74,8 @@ export function Avatar() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    setDragging(false);
+    if (start.moved && dragPosition) setPosition(dragPosition);
+    setDragPosition(null);
     if (!cancelled && !start.moved) openChat();
   }
 
@@ -105,11 +104,14 @@ export function Avatar() {
       onPointerCancel={(event) => endPointer(event, true)}
       onContextMenu={(event) => {
         event.preventDefault();
+        // Долгое нажатие на тачскрине тоже вызывает contextmenu: не даём последующему pointerup открыть чат.
+        drag.current = null;
+        setDragPosition(null);
         openSettings({ x: event.clientX, y: event.clientY });
       }}
       onKeyDown={onKeyboard}
     >
-      <img src="/assets/avatar/meiyuren.webp" alt="" draggable={false} />
+      <img src={`${import.meta.env.BASE_URL}assets/avatar/meiyuren.webp`} alt="" draggable={false} />
       {!dragging && <span className="avatar__aura" aria-hidden="true" />}
     </div>
   );

@@ -11,6 +11,13 @@ export function boundPosition(position: Point, size: number, width: number, heig
   };
 }
 
+// Ширина панели чата с отступом: на широком экране аватар стоит справа от текста, но не под чатом.
+const CHAT_GUTTER = 440;
+export const WIDE_LAYOUT = 1100;
+
 export function startingPosition(size: number, width: number, height: number): Point {
-  return boundPosition({ x: 28, y: height - size - 32 }, size, width, height);
+  const point = width >= WIDE_LAYOUT
+    ? { x: width - size - CHAT_GUTTER, y: (height - size) / 2 + 40 }
+    : { x: 28, y: height - size - 32 };
+  return boundPosition(point, size, width, height);
 }
