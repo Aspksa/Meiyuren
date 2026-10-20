@@ -33,3 +33,13 @@ export async function putCloudSettings(model: string, enabled: boolean): Promise
     method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ model, enabled }),
   }));
 }
+
+export type CloudDiagnostics = {
+  hasKey: boolean; enabled: boolean; reachable: boolean;
+  modelAvailable: boolean; modelsCount: number;
+  latencyMs?: number; selectedModel: string; message: string;
+};
+
+export async function getCloudDiagnostics(): Promise<CloudDiagnostics> {
+  return parseResponse(await fetch('/api/cloud/diagnostics', { cache: 'no-store' }));
+}
