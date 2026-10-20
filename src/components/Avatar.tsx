@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { avatarUrl } from '../lib/avatars';
 import { boundPosition, startingPosition } from '../lib/position';
 import type { Point } from '../lib/position';
 import { useAppStore } from '../store/useAppStore';
@@ -15,6 +16,7 @@ export function Avatar() {
   const position = useAppStore((s) => s.position);
   const size = useAppStore((s) => s.size);
   const opacity = useAppStore((s) => s.opacity);
+  const avatarId = useAppStore((s) => s.avatarId);
   const setPosition = useAppStore((s) => s.setPosition);
   const openChat = useAppStore((s) => s.openChat);
   const openSettings = useAppStore((s) => s.openSettings);
@@ -111,7 +113,7 @@ export function Avatar() {
       }}
       onKeyDown={onKeyboard}
     >
-      <img src={`${import.meta.env.BASE_URL}assets/avatar/meiyuren.webp`} alt="" draggable={false} />
+      <img src={avatarUrl(avatarId)} alt="" draggable={false} />
       {!dragging && <span className="avatar__aura" aria-hidden="true" />}
     </div>
   );
