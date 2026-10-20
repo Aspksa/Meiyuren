@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -13,6 +14,7 @@ from .replies import generate_reply
 
 class ChatInput(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
+    requestId: str | None = Field(default=None, max_length=40)
 
 
 class MemoryInput(BaseModel):
@@ -36,16 +38,28 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def protect_cloud_settings(request: Request, call_next):
-        if request.url.path.startswith("/api/cloud/") and request.method not in ("GET", "HEAD"):
+        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory"))
+        if protected_path and request.method not in ("GET", "HEAD", "OPTIONS"):
+            # Для всех изменений нужен нестандартный заголовок и проверка Origin.
+            # Сторонний веб-сайт не может отправить этот заголовок без CORS-разрешения.
+            if request.headers.get("x-meiyuren-client") != "1":
+                return JSONResponse({"detail": "Требуется запрос из локального приложения."}, status_code=403)
             # Cross-site отправка ключа и смена модели должны быть запрещены.
             origin = request.headers.get("origin", "")
             parsed = urlsplit(origin)
-            if parsed.scheme != "http" or parsed.netloc != request.headers.get("host", "") or parsed.path:
+            if (request.url.path.startswith("/api/cloud/") and not origin) or (origin and (parsed.scheme != "http" or parsed.netloc != request.headers.get("host", "") or parsed.path)):
                 return JSONResponse({"detail": "Настройки доступны только из локального приложения."}, status_code=403)
         response = await call_next(request)
-        if request.url.path.startswith("/api/cloud/"):
+        if protected_path:
             response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, error: RequestValidationError):
+        if request.url.path == "/api/cloud/key":
+            # Pydantic может включить исходный ввод в 422. Не возвращаем API-ключ обратно.
+            return JSONResponse({"detail": "Некорректный формат ключа Cloud.ru."}, status_code=422)
+        return JSONResponse({"detail": error.errors()}, status_code=422)
 
     @app.exception_handler(cloud.CloudError)
     async def cloud_error_handler(_request: Request, error: cloud.CloudError):
@@ -68,12 +82,27 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         notes = db.get_memory(database)["notes"]
         settings = db.cloud_config(database)
         if settings["enabled"]:
-            # Только последние сообщения передаются облачному провайдеру.
+            if not body.requestId:
+                raise HTTPException(status_code=422, detail="Для Cloud.ru требуется идентификатор запроса.")
+            # Вставка уникального requestId в SQLite ДО платного запроса.
+            state, existing = db.reserve_request(database, body.requestId, text)
+            if state == "done":
+                return existing
+            if state != "new":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Этот запрос уже был отправлен в Cloud.ru. Результат неизвестен или запрос ещё выполняется. "
+                           "Повторная платная отправка заблокирована. Дождитесь ответа или явно создайте новый запрос.",
+                )
             history = db.messages(database, limit=12)
-            response = await cloud.generate_cloud_reply(settings["model"], history, notes, text)
-        else:
-            response = generate_reply(text, notes)
-        # Ошибки провайдера не сохраняются как успешная переписка.
+            try:
+                response = await cloud.generate_cloud_reply(settings["model"], history, notes, text)
+                return db.finish_request(database, body.requestId, text, response)
+            except Exception:
+                # Сохраняем резервирование: повтор с тем же ID не создаст второй платный вызов.
+                db.fail_request(database, body.requestId)
+                raise
+        response = generate_reply(text, notes)
         return db.append_exchange(database, text, response)
 
     @app.delete("/api/chat/messages")
@@ -96,7 +125,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.put("/api/cloud/key")
     def set_cloud_key(body: CloudKeyInput) -> dict:
         cloud.save_key(body.key)
-        return {"hasKey": True}
+        # Новый ключ может иметь другие права / модели. Всегда выключаем прежний Cloud-режим.
+        previous = db.cloud_config(database)
+        db.update_cloud_config(database, previous["model"], False)
+        return {"hasKey": True, "enabled": False}
 
     @app.delete("/api/cloud/key")
     def remove_cloud_key() -> dict:

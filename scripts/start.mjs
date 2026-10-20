@@ -17,7 +17,7 @@ function locatePython() {
   if (process.platform === 'win32') options.push(['py', ['-3']], ['python', []]);
   else options.push(['python3', []], ['python', []]);
   for (const [command, prefix] of options) {
-    const probe = spawnSync(command, [...prefix, '-c', 'import fastapi, uvicorn'], {
+    const probe = spawnSync(command, [...prefix, '-c', 'import fastapi, uvicorn, httpx, keyring'], {
       cwd: root, timeout: 5000, windowsHide: true, encoding: 'utf8',
     });
     if (probe.status === 0) return { command, prefix };
@@ -30,7 +30,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function startBackend() {
   const python = locatePython();
   if (!python) {
-    console.warn('[Meiyuren] Python/FastAPI не готовы. Выполните setup-python.cmd (Windows) или инструкции README.');
+    console.warn('[Meiyuren] Python/FastAPI или Cloud.ru-зависимости не готовы. Выполните setup-python.cmd (Windows) или инструкции README.');
     console.warn('[Meiyuren] Сайт откроется, но чат и память будут недоступны.');
     process.env.MEIYUREN_API_PORT = '8000';
     return null;

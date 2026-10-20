@@ -14,14 +14,14 @@ export async function loadHistory(signal?: AbortSignal): Promise<Message[]> {
   return (await parse<{ messages: Message[] }>(response)).messages;
 }
 
-export async function sendMessage(text: string): Promise<{ user: Message; assistant: Message }> {
+export async function sendMessage(text: string, requestId: string): Promise<{ user: Message; assistant: Message }> {
   return parse(await fetch('/api/chat/messages', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ text, requestId }),
   }));
 }
 
 export async function clearHistory(): Promise<void> {
-  await parse<{ deleted: number }>(await fetch('/api/chat/messages', { method: 'DELETE' }));
+  await parse<{ deleted: number }>(await fetch('/api/chat/messages', { method: 'DELETE', headers: { 'X-Meiyuren-Client': '1' } }));
 }
 
 export async function loadMemory(signal?: AbortSignal): Promise<string> {
@@ -31,6 +31,6 @@ export async function loadMemory(signal?: AbortSignal): Promise<string> {
 
 export async function saveMemory(notes: string): Promise<void> {
   await parse(await fetch('/api/memory', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-Meiyuren-Client': '1' }, body: JSON.stringify({ notes }),
   }));
 }

@@ -7,7 +7,7 @@ from backend.app.main import create_app
 
 
 def client(tmp_path):
-    return TestClient(create_app(tmp_path / "meiyuren.sqlite3"))
+    return TestClient(create_app(tmp_path / "meiyuren.sqlite3"), headers={"X-Meiyuren-Client": "1"})
 
 
 def test_health_and_persistent_history(tmp_path):
@@ -52,7 +52,7 @@ def test_explicit_memory_and_demo_use(tmp_path):
 
 def test_sqlite_uses_structured_tables(tmp_path):
     path = tmp_path / "db.sqlite3"
-    with TestClient(create_app(path)) as api:
+    with TestClient(create_app(path), headers={"X-Meiyuren-Client": "1"}) as api:
         assert api.post("/api/chat/messages", json={"text": "Проверка"}).status_code == 201
     with sqlite3.connect(path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

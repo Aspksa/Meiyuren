@@ -48,6 +48,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
       await putCloudKey(keyInput);
       setKeyInput('');
       setHasKey(true);
+      setEnabled(false);
       setModels([]);
       setModelsLoaded(false);
       return 'Ключ сохранён в системном хранилище учётных данных.';

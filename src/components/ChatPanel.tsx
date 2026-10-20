@@ -19,6 +19,8 @@ export function ChatPanel() {
   const [error, setError] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const pendingRef = useRef<{ text: string; id: string } | null>(null);
+  const [uncertain, setUncertain] = useState(false);
 
   useEffect(() => {
     if (!chatOpen) return;
@@ -52,15 +54,24 @@ export function ChatPanel() {
     event.preventDefault();
     const text = draft.trim();
     if (!text || waiting || loading) return;
+    // Один и тот же ID на повторную попытку: backend не создаст второй платный запрос.
+    if (!pendingRef.current || pendingRef.current.text !== text) {
+      pendingRef.current = { text, id: crypto.randomUUID() };
+    }
     setWaiting(true);
     setError('');
     try {
-      const exchange = await sendMessage(text);
-      setMessages([...useAppStore.getState().messages, exchange.user, exchange.assistant]);
+      const exchange = await sendMessage(text, pendingRef.current.id);
+      const existing = useAppStore.getState().messages;
+      const ids = new Set([exchange.user.id, exchange.assistant.id]);
+      setMessages([...existing.filter((message) => !ids.has(message.id)), exchange.user, exchange.assistant]);
+      pendingRef.current = null;
+      setUncertain(false);
       setDraft('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось отправить сообщение');
-      // Текст сохранён в поле и его можно отправить повторно.
+      setUncertain(true);
+      // Текст и ID сохраняются: повтор не создаст второй платный запрос.
     } finally {
       setWaiting(false);
     }
@@ -88,6 +99,14 @@ export function ChatPanel() {
         {waiting && <div className="message message--assistant"><div className="message__text">Мэйюрэн печатает…</div></div>}
       </div>
       {error && <p className="chat-panel__error" role="alert">{error}</p>}
+      {uncertain && !waiting && <button type="button" className="chat-panel__new-request"
+        onClick={() => {
+          if (window.confirm('Создать НОВЫЙ запрос? Если Cloud.ru уже обработал предыдущий, возможна повторная оплата.')) {
+            pendingRef.current = null;
+            setUncertain(false);
+            setError('Теперь можно отправить новый запрос. Предыдущий ответ мог быть обработан Cloud.ru.');
+          }
+        }}>Создать новый запрос (возможно повторное списание)</button>}
       <form className="chat-panel__composer" onSubmit={(event) => { void submit(event); }}>
         <input
           ref={inputRef}
@@ -95,7 +114,13 @@ export function ChatPanel() {
           placeholder="Напиши Мэйюрэн…"
           value={draft}
           maxLength={2000}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            if (pendingRef.current?.text !== event.target.value.trim()) {
+              pendingRef.current = null;
+              setUncertain(false);
+            }
+          }}
           disabled={waiting || loading}
         />
         <button type="submit" aria-label="Отправить сообщение" disabled={!draft.trim() || waiting || loading}>➤</button>
