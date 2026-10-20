@@ -120,8 +120,8 @@ export default function App() {
 
       <IconSidebar
         updatesOpen={updatesOpen}
-        onChat={() => { setUpdatesOpen(false); openChat(); }}
-        onSettings={() => { setUpdatesOpen(false); openSettings({ x: 110, y: 120 }); }}
+        onChat={() => { setUpdatesOpen(false); setCloudOpen(false); openChat(); }}
+        onSettings={() => { setUpdatesOpen(false); setCloudOpen(false); openSettings({ x: 110, y: 120 }); }}
         onUpdates={() => { useAppStore.getState().closeSettings(); setCloudOpen(false); setUpdatesOpen((value) => !value); }}
         cloudOpen={cloudOpen}
         onCloud={() => { useAppStore.getState().closeSettings(); setUpdatesOpen(false); setCloudOpen((value) => !value); }}
