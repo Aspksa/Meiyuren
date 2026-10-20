@@ -324,10 +324,15 @@ class MemoryEngine:
                     "INSERT OR IGNORE INTO memory_jobs(id,kind,ref_id,conversation_id,state,created_at) "
                     "VALUES(?,'extract',?,?,'pending',?)",
                     (str(uuid.uuid4()),user["id"],conversation_id,ts))
-                conn.execute(
-                    "INSERT OR IGNORE INTO memory_jobs(id,kind,ref_id,conversation_id,state,created_at) "
-                    "VALUES(?,'summary',?,?,'pending',?)",
-                    (str(uuid.uuid4()),user["id"],conversation_id,ts))
+                # Сводку обновляем только после каждых шести пар сообщений.
+                total=conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id=?",(conversation_id,)
+                ).fetchone()[0]
+                if total>=12 and total % 12 == 0:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_jobs(id,kind,ref_id,conversation_id,state,created_at) "
+                        "VALUES(?,'summary',?,?,'pending',?)",
+                        (str(uuid.uuid4()),user["id"],conversation_id,ts))
 
     def process_pending(self,limit: int=10) -> int:
         """Единственный локальный worker; lease позволяет восстановиться после перезапуска."""
@@ -335,9 +340,14 @@ class MemoryEngine:
         for _ in range(min(limit,50)):
             with closing(db.connection(self.path)) as conn:
                 with conn:
+                    # Завершённые задания не должны копиться бесконечно.
+                    conn.execute("DELETE FROM memory_jobs WHERE state IN ('done','failed') AND created_at<?",
+                                 (now()-7*24*3600*1000,))
+                    conn.execute("UPDATE memory_jobs SET state='failed',lease_until=0 "
+                                 "WHERE state='running' AND lease_until<? AND attempts>=3",(now(),))
                     row=conn.execute(
                         "SELECT * FROM memory_jobs WHERE state='pending' OR "
-                        "(state='running' AND lease_until<?) ORDER BY created_at,id LIMIT 1",
+                        "(state='running' AND lease_until<? AND attempts<3) ORDER BY created_at,id LIMIT 1",
                         (now(),)).fetchone()
                     if not row:
                         break
@@ -399,22 +409,37 @@ class MemoryEngine:
                     (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now()))
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
-        # Локальная выписка из дословных реплик, НЕ AI-утверждение и НЕ подтверждённый факт.
+        """Только безопасная выписка подтверждённых фактов с существующими источниками.
+
+        Не цитируем прежние сообщения напрямую: это предотвращает повторное появление
+        забытых фактов в сводках после последующей фоновой обработки.
+        """
         with closing(db.connection(self.path)) as conn:
-            rows=conn.execute(
-                "SELECT id,role,text FROM messages WHERE conversation_id=? ORDER BY rowid DESC LIMIT 32",
-                (conversation_id,)).fetchall()
-            if len(rows)<12:
+            # Длинный диалог — повод пересобрать выписку, но не повод выдумать факты.
+            total=conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id=?",
+                               (conversation_id,)).fetchone()[0]
+            if total<12:
+                return
+            selected=conn.execute(
+                "SELECT m.content,m.source_message_id FROM memory_items m "
+                "JOIN messages source ON source.id=m.source_message_id AND source.role='user' "
+                "LEFT JOIN memory_excluded_sources banned ON banned.source_message_id=m.source_message_id "
+                "WHERE m.conversation_id=? AND m.status='confirmed' AND banned.source_message_id IS NULL "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY m.updated_at DESC LIMIT 10",(conversation_id,now())
+            ).fetchall()
+            if not selected:
+                # Старые черновики могли содержать отозванные источники.
+                with conn:
+                    conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
                 return
             old=conn.execute("SELECT * FROM memory_summaries WHERE conversation_id=?",
                              (conversation_id,)).fetchone()
             if old and old["source_message_id"]==source_id:
                 return
-            user_lines=[r["text"].strip().replace("\n"," ")[:140] for r in reversed(rows)
-                        if r["role"]=="user" and not SECRET.search(r["text"])][:10]
-            if len(user_lines)<5:
-                return
-            content="Локальная выписка (непроверенная):\n"+"\n".join("• "+line for line in user_lines)
+            content="Выписка из подтверждённых фактов (без исходной переписки):\n"+ "\n".join(
+                "• "+r["content"][:200] for r in selected if not SECRET.search(r["content"])
+            )
             with conn:
                 conn.execute(
                     "INSERT INTO memory_summaries(conversation_id,content,source_message_id,status,updated_at) "
@@ -453,6 +478,10 @@ class MemoryEngine:
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (item["fingerprint"],now()))
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item["id"],))
+                conn.execute("DELETE FROM memory_revisions WHERE memory_id IN "
+                             "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
+                conn.execute("DELETE FROM memory_recall_log WHERE memory_id IN "
+                             "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
                 conn.execute("DELETE FROM memory_items WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
