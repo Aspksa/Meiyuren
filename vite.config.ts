@@ -1,4 +1,6 @@
 import { defineConfig } from 'vite';
+// Тип переменной Node.js для Vite-конфига без отдельного @types/node.
+declare const process: { env: Record<string, string | undefined> };
 import react from '@vitejs/plugin-react';
 import { updaterPlugin } from './scripts/vite-updates.mjs';
 
