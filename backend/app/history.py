@@ -30,7 +30,7 @@ def initialise(path):
                     created_at INTEGER NOT NULL
                 )
             """)
-            conn.execute("INSERT OR IGNORE INTO conversations VALUES(?,?,?,?)",
+            conn.execute("INSERT OR IGNORE INTO conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)",
                          (MAIN, "Основной диалог", int(time.time()*1000), int(time.time()*1000)))
             columns = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
             if "conversation_id" not in columns:
@@ -74,7 +74,7 @@ def create_conversation(path, title):
     conv_id = str(uuid.uuid4())
     with closing(connection(path)) as conn:
         with conn:
-            conn.execute("INSERT INTO conversations VALUES(?,?,?,?)", (conv_id, title, now, now))
+            conn.execute("INSERT INTO conversations(id,title,created_at,updated_at) VALUES(?,?,?,?)", (conv_id, title, now, now))
     return {"id": conv_id, "title": title, "createdAt": now, "updatedAt": now}
 
 
