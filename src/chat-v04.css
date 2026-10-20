@@ -1,0 +1,12 @@
+.chat-panel__error { margin: 6px 14px; padding: 10px 13px; border: 1px solid #cf65575a; border-radius: 10px; font-size: 11px; line-height: 1.5; color: #f0bbb5; background: #a94d3520; }
+.memory-editor { border-top: 1px solid var(--line); margin-top: 15px; padding-top: 18px; }
+.memory-editor h3 { font-size: 14px; color: var(--gold-soft); font-weight: 600; margin: 0 0 6px; }
+.memory-editor p { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 6px 0 13px; }
+.memory-editor label { display: block; font-size: 12px; margin-bottom: 8px; color: var(--ivory); }
+.memory-editor textarea { display: block; width: 100%; resize: vertical; min-height: 70px; max-height: 160px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; font: inherit; font-size: 12px; line-height: 1.5; background: #fbf3e409; color: var(--ivory); }
+.memory-editor textarea::placeholder { color: var(--muted); }
+.memory-editor__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+.memory-editor__actions button { flex: 1; padding: 9px 8px; font-size: 11px; border-radius: 11px; border: 1px solid var(--line-strong); background: #fbf3e40b; color: var(--ivory); }
+.memory-editor__actions button:disabled { cursor: wait; opacity: .5; }
+.memory-editor .memory-editor__error { color: #ffc7b7; margin-bottom: 0; }
+.memory-editor .memory-editor__success { color: #a6dcb1; margin-bottom: 0; }

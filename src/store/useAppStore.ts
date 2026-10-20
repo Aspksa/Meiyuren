@@ -42,6 +42,7 @@ type AppState = PersistedState & {
   resetPosition: () => void;
   addMessage: (role: Message['role'], text: string) => string;
   clearChat: () => void;
+  setMessages: (messages: Message[]) => void;
 };
 
 let nextMessageId = 0;
@@ -93,15 +94,7 @@ export const useAppStore = create<AppState>()(
       setAvatarId: (avatarId) => {
         if (isAvatarId(avatarId)) set({ avatarId });
       },
-      openChat: () =>
-        set((state) => ({
-          chatOpen: true,
-          settingsOpen: false,
-          messages:
-            state.messages.length === 0 && state.greetingEnabled
-              ? [message('assistant', 'Привет! Я Мэйюрэн. Рада тебя видеть ✨ Чем займёмся?')]
-              : state.messages,
-        })),
+      openChat: () => set({ chatOpen: true, settingsOpen: false }),
       closeChat: () => set({ chatOpen: false }),
       openSettings: (settingsAnchor) => set({ settingsOpen: true, settingsAnchor }),
       closeSettings: () => set({ settingsOpen: false }),
@@ -112,6 +105,7 @@ export const useAppStore = create<AppState>()(
         return item.id;
       },
       clearChat: () => set({ messages: [] }),
+      setMessages: (messages) => set({ messages }),
     }),
     {
       name: 'meiyuren-settings-v1',
