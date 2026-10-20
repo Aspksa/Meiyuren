@@ -14,6 +14,7 @@ export default defineConfig({
     proxy: {
       '/api/chat': { target: backend, changeOrigin: false },
       '/api/memory': { target: backend, changeOrigin: false },
+      '/api/cloud': { target: backend, changeOrigin: false },
       '/api/health': { target: backend, changeOrigin: false },
     },
   },

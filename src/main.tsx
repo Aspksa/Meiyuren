@@ -5,6 +5,7 @@ import './styles.css';
 import './theme.css';
 import './sidebar.css';
 import './chat-v04.css';
+import './cloud-settings.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

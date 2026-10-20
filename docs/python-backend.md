@@ -22,3 +22,8 @@ python -m pytest backend\tests -q
 ```
 
 Ответы в `backend/app/replies.py` сейчас демонстрационные. Для подключения AI реализуйте безопасный серверный адаптер, не сохраняйте токены на клиенте.
+
+
+## Cloud.ru (v0.5)
+
+`backend/app/cloud.py` использует фиксированный `https://foundation-models.api.cloud.ru/v1` с Bearer API key. `backend/app/main.py` содержит `/api/cloud/` маршруты. Ключ хранится только в системном keyring, а модель и enabled — в таблице `cloud_settings` SQLite. Успешный ответ провайдера сохраняется с вопросом атомарно; ошибки не сохраняются как диалог.

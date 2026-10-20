@@ -1,0 +1,35 @@
+export type CloudSettings = { hasKey: boolean; model: string; enabled: boolean };
+
+async function parseResponse<T>(response: Response): Promise<T> {
+  const data: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = data && typeof data === 'object' && 'detail' in data ? data.detail : null;
+    throw new Error(typeof detail === 'string' ? detail : 'Ошибка Cloud.ru. Проверьте соединение с Python.');
+  }
+  return data as T;
+}
+
+export async function getCloudSettings(signal?: AbortSignal): Promise<CloudSettings> {
+  return parseResponse(await fetch('/api/cloud/settings', { signal, cache: 'no-store' }));
+}
+
+export async function putCloudKey(key: string): Promise<void> {
+  await parseResponse(await fetch('/api/cloud/key', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }),
+  }));
+}
+
+export async function deleteCloudKey(): Promise<void> {
+  await parseResponse(await fetch('/api/cloud/key', { method: 'DELETE' }));
+}
+
+export async function getCloudModels(): Promise<string[]> {
+  const response = await fetch('/api/cloud/models', { cache: 'no-store' });
+  return (await parseResponse<{ models: string[] }>(response)).models;
+}
+
+export async function putCloudSettings(model: string, enabled: boolean): Promise<void> {
+  await parseResponse(await fetch('/api/cloud/settings', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, enabled }),
+  }));
+}

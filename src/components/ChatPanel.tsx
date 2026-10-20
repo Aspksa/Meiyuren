@@ -72,7 +72,7 @@ export function ChatPanel() {
         <span className="panel-header__mark"><img className="panel-header__portrait" src={avatarUrl(avatarId)} alt="" /></span>
         <div>
           <strong>Мэйюрэн</strong>
-          <span className="panel-header__sub">Локальный Python · SQLite · демо-ответы</span>
+          <span className="panel-header__sub">Python · SQLite · Cloud.ru / демо</span>
         </div>
         <button className="icon-button panel-header__close" onClick={closeChat} aria-label="Закрыть чат" type="button">×</button>
       </header>
@@ -100,7 +100,7 @@ export function ChatPanel() {
         />
         <button type="submit" aria-label="Отправить сообщение" disabled={!draft.trim() || waiting || loading}>➤</button>
       </form>
-      <div className="chat-panel__footnote">История хранится в SQLite на этом компьютере. AI ещё не подключён.</div>
+      <div className="chat-panel__footnote">История хранится локально. Провайдер выбирается в меню Cloud.ru.</div>
     </section>
   );
 }
