@@ -265,28 +265,45 @@ class MemoryEngine:
         return self._item(row)
 
     def forget(self, item_id: str) -> bool:
+        """Удалить текущую запись и все связанные с ней устаревшие версии.
+
+        Транзакционно удаляются тексты, ревизии, FTS и журналы выбора.
+        Исходные сообщения чата и отдельные backup-файлы остаются.
+        """
         with closing(db.connection(self.path)) as conn:
             with conn:
-                old=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
-                if not old:
+                current=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+                if not current:
                     return False
-                conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",(old["fingerprint"],now()))
-                conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
-                conn.execute("DELETE FROM memory_items WHERE id=?",(item_id,))
-                # В предыдущих версиях копия ручного факта оставалась в memory_facts.
-                conn.execute("DELETE FROM memory_facts WHERE id=?",(item_id,))
-                conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(item_id,))
-                conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(item_id,))
-                if old["source_message_id"]:
-                    conn.execute("INSERT OR IGNORE INTO memory_excluded_sources VALUES(?,?)",
-                                 (old["source_message_id"],now()))
-                conn.execute("DELETE FROM memory_candidates WHERE fingerprint=?",(old["fingerprint"],))
-                # Не оставляем производные сводки с потенциально удалённой информацией.
-                if old["conversation_id"]!="global":
-                    conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",
-                                 (old["conversation_id"],))
-                else:
-                    conn.execute("DELETE FROM memory_summaries")
+                to_delete=[item_id]
+                visited=set()
+                while to_delete:
+                    candidate=to_delete.pop()
+                    if candidate in visited:
+                        continue
+                    visited.add(candidate)
+                    predecessors=conn.execute(
+                        "SELECT id FROM memory_items WHERE superseded_by=?",(candidate,)
+                    ).fetchall()
+                    to_delete.extend(row["id"] for row in predecessors)
+                for target in visited:
+                    old=conn.execute("SELECT * FROM memory_items WHERE id=?",(target,)).fetchone()
+                    if not old:
+                        continue
+                    conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
+                                 (old["fingerprint"],now()))
+                    conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
+                    conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(target,))
+                    conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(target,))
+                    if old["source_message_id"]:
+                        conn.execute("INSERT OR IGNORE INTO memory_excluded_sources VALUES(?,?)",
+                                     (old["source_message_id"],now()))
+                    conn.execute("DELETE FROM memory_candidates WHERE fingerprint=?",
+                                 (old["fingerprint"],))
+                    conn.execute("DELETE FROM memory_items WHERE id=?",(target,))
+                # Связанная с историей память могла попасть в любую выписку.
+                conn.execute("DELETE FROM memory_summaries")
         return True
 
     def explain(self,item_id: str) -> dict | None:
