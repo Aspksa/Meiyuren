@@ -149,3 +149,33 @@ def test_cross_site_mutation_of_conversations_rejected(client):
     response = client.post("/api/conversations", json={"title": "Чужой запрос"},
                            headers={"Origin": "http://attacker.invalid"})
     assert response.status_code == 403
+
+
+
+def test_stream_cloud_auth_error_is_actionable(client, monkeypatch):
+    class Denied:
+        def raise_for_status(self):
+            request = httpx.Request("POST", cloud.BASE_URL + "/chat/completions")
+            response = httpx.Response(401, request=request, json={"detail": "private-secret"})
+            raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+        async def aiter_lines(self):
+            if False:
+                yield ""
+
+    @asynccontextmanager
+    async def denied_stream(self, method, url, **kwargs):
+        yield Denied()
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", denied_stream)
+    assert client.put("/api/cloud/key", json={"key": "secret-test-123"},
+                      headers={"Origin": "http://testserver"}).status_code == 200
+    assert client.put("/api/cloud/settings", json={"model": "ai-sage/Test", "enabled": True},
+                      headers={"Origin": "http://testserver"}).status_code == 200
+    req = {"text": "Проверка доступа", "requestId": str(uuid.uuid4())}
+    with client.stream("POST", "/api/chat/stream", json=req) as response:
+        content = response.read().decode()
+    assert "event: error" in content
+    assert "API-ключ" in content
+    assert "private-secret" not in content
+    assert client.get("/api/chat/messages").json()["messages"] == []
