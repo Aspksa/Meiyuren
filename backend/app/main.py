@@ -50,7 +50,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def protect_cloud_settings(request: Request, call_next):
-        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory"))
+        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory", "/api/conversations"))
         if protected_path and request.method not in ("GET", "HEAD", "OPTIONS"):
             # Для всех изменений нужен нестандартный заголовок и проверка Origin.
             # Сторонний веб-сайт не может отправить этот заголовок без CORS-разрешения.
