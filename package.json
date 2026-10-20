@@ -1,7 +1,7 @@
 {
   "name": "meiyuren",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start.mjs",
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run src",
-    "test:launcher": "node --test scripts/ports.test.mjs"
+    "test:launcher": "node --test scripts/ports.test.mjs scripts/updater-policy.test.mjs scripts/vite-updates.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
