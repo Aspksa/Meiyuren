@@ -43,3 +43,17 @@ export type CloudDiagnostics = {
 export async function getCloudDiagnostics(): Promise<CloudDiagnostics> {
   return parseResponse(await fetch('/api/cloud/diagnostics', { cache: 'no-store' }));
 }
+
+export type ModelCompatibility = {
+  model: string;
+  status: 'compatible' | 'incompatible' | 'unknown';
+  issues: string[];
+  warnings: string[];
+  maxModelLen: number | null;
+  checkedWithoutGeneration: boolean;
+};
+
+export async function getCloudCompatibility(model: string, signal?: AbortSignal): Promise<ModelCompatibility> {
+  const url = '/api/cloud/compatibility?model=' + encodeURIComponent(model);
+  return parseResponse(await fetch(url, { cache: 'no-store', signal }));
+}

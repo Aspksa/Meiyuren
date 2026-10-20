@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { deleteCloudKey, getCloudDiagnostics, getCloudModels, getCloudSettings, putCloudKey, putCloudSettings } from '../services/cloudApi';
+import { deleteCloudKey, getCloudCompatibility, getCloudDiagnostics, getCloudModels, getCloudSettings, putCloudKey, putCloudSettings } from '../services/cloudApi';
+import type { ModelCompatibility } from '../services/cloudApi';
 import { streamMessage } from '../services/chatApi';
 import type { CloudDiagnostics } from '../services/cloudApi';
 
@@ -15,6 +16,9 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
   const [message, setMessage] = useState('');
   const [diagnostics, setDiagnostics] = useState<CloudDiagnostics | null>(null);
   const [testAnswer, setTestAnswer] = useState('');
+  const [compatibility, setCompatibility] = useState<ModelCompatibility | null>(null);
+  const [compatibilityBusy, setCompatibilityBusy] = useState(false);
+  const [compatibilityError, setCompatibilityError] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -37,6 +41,27 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
     }).finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !hasKey || !model) {
+      setCompatibility(null);
+      setCompatibilityError('');
+      setCompatibilityBusy(false);
+      return;
+    }
+    const controller = new AbortController();
+    setCompatibility(null);
+    setCompatibilityError('');
+    setCompatibilityBusy(true);
+    void getCloudCompatibility(model, controller.signal).then(result => {
+      if (!controller.signal.aborted) setCompatibility(result);
+    }).catch((cause: unknown) => {
+      if (!controller.signal.aborted) {
+        setCompatibilityError(cause instanceof Error ? cause.message : 'Проверка параметров недоступна');
+      }
+    }).finally(() => { if (!controller.signal.aborted) setCompatibilityBusy(false); });
+    return () => controller.abort();
+  }, [open, hasKey, model]);
 
   async function action(task: () => Promise<string>) {
     setBusy(true);
@@ -113,6 +138,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
 
   const available = model && !models.includes(model) ? [model, ...models] : models;
   const verifiedModel = modelsLoaded && models.includes(model);
+  const canApplyModel = verifiedModel && compatibility !== null && compatibility.status !== 'incompatible' && !compatibilityBusy;
   return (
     <section className="cloud-settings" role="dialog" aria-label="Настройки Cloud.ru">
       <header className="cloud-settings__header">
@@ -152,9 +178,22 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
           <option value="">Выберите модель</option>
           {available.map((id) => <option key={id} value={id}>{id}</option>)}
         </select>
-        <p className="cloud-settings__hint">Для включения облачного чата сначала загрузите список моделей с текущим ключом и выберите доступную текстовую модель. Модели embedding и audio исключаются.</p>
+        <p className="cloud-settings__hint">Для включения облачного чата загрузите список моделей с текущим ключом и выберите текстовую модель. Проверка параметров выполняется автоматически, без платной генерации.</p>
+        {model && hasKey && <div className="cloud-settings__diagnostic" role="status">
+          <strong>Совместимость модели</strong>
+          {compatibilityBusy && <p>Проверяю параметры через Cloud.ru…</p>}
+          {compatibilityError && <p>Не удалось проверить: {compatibilityError}</p>}
+          {compatibility && <>
+            <p>{compatibility.status === 'compatible' ? 'Подтверждена метаданными'
+              : compatibility.status === 'incompatible' ? 'Есть несовместимые параметры'
+              : 'Подтверждена частично — данных недостаточно'}</p>
+            {compatibility.maxModelLen && <p>Контекст модели: до {compatibility.maxModelLen.toLocaleString('ru-RU')} токенов</p>}
+            {compatibility.issues.map((issue, i) => <p key={'issue-' + i}>⚠ {issue}</p>)}
+            {compatibility.warnings.map((warning, i) => <p key={'warning-' + i}>· {warning}</p>)}
+          </>}
+        </div>}
         <div className="cloud-settings__actions">
-          <button type="button" className="cloud-settings__primary" disabled={busy || !hasKey || !verifiedModel} onClick={() => void saveSettings(true)}>Применить модель</button>
+          <button type="button" className="cloud-settings__primary" disabled={busy || !hasKey || !canApplyModel} onClick={() => void saveSettings(true)}>Применить модель</button>
           <button type="button" disabled={busy || !enabled} onClick={() => void saveSettings(false)}>Выключить Cloud.ru</button>
         </div>
         <div className="cloud-settings__separator" />
