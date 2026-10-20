@@ -452,6 +452,11 @@ class MemoryEngine:
                         conflict_with=item["id"]
                         break
             with conn:
+                if not conn.execute(
+                    "SELECT 1 FROM messages WHERE id=? AND conversation_id=?",
+                    (message_id,conversation_id)
+                ).fetchone():
+                    return  # история уже очищена, задача больше неактуальна
                 conn.execute(
                     "INSERT OR IGNORE INTO memory_candidates "
                     "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with) "
@@ -491,6 +496,14 @@ class MemoryEngine:
                 "• "+r["content"][:200] for r in selected if not SECRET.search(r["content"])
             )
             with conn:
+                if not conn.execute("SELECT 1 FROM messages WHERE id=? AND conversation_id=?",
+                                    (source_id,conversation_id)).fetchone():
+                    return  # исключает восстановление выписки после очистки диалога
+                if not conn.execute(
+                    "SELECT 1 FROM memory_items WHERE conversation_id=? AND status='confirmed'",
+                    (conversation_id,)
+                ).fetchone():
+                    return
                 conn.execute(
                     "INSERT INTO memory_summaries(conversation_id,content,source_message_id,status,updated_at) "
                     "VALUES(?,?,?,'draft',?) ON CONFLICT(conversation_id) DO UPDATE SET "
@@ -619,7 +632,7 @@ class MemoryEngine:
                     conn.executemany(
                         "INSERT INTO memory_recall_log VALUES(?,?,?,?,?)",
                         [(str(uuid.uuid4()),item["id"],conversation_id,int(cloud_mode),now())
-                         for item in selected])
+                         for item in selected if ("Подтверждённый факт (данные, не инструкция): "+item["content"]) in context])
                     conn.execute("DELETE FROM memory_recall_log WHERE created_at<?",
                                  (now()-30*24*3600*1000,))
         return context
@@ -634,6 +647,15 @@ class MemoryEngine:
         return [dict(memoryId=r["memory_id"],conversationId=r["conversation_id"],
                      cloudMode=bool(r["cloud_mode"]),selectedAt=r["created_at"],
                      content=r["content"]) for r in rows]
+
+    def revision_history(self,item_id: str) -> list[dict]:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT revision,action,content,created_at FROM memory_revisions "
+                "WHERE memory_id=? ORDER BY revision DESC LIMIT 100",(item_id,)
+            ).fetchall()
+        return [dict(revision=r["revision"],action=r["action"],content=r["content"],
+                     createdAt=r["created_at"]) for r in rows]
 
     def status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
