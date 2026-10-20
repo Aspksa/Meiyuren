@@ -140,3 +140,12 @@ def test_interrupted_stream_keeps_payment_guard(client, monkeypatch):
         repeated = second.read().decode()
     assert "event: error" in repeated
     assert client.get("/api/chat/messages").json()["messages"] == []
+
+
+def test_cross_site_mutation_of_conversations_rejected(client):
+    response = client.post("/api/conversations", json={"title": "Чужой запрос"},
+                           headers={"X-Meiyuren-Client": ""})
+    assert response.status_code == 403
+    response = client.post("/api/conversations", json={"title": "Чужой запрос"},
+                           headers={"Origin": "http://attacker.invalid"})
+    assert response.status_code == 403

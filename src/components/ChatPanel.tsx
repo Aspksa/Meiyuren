@@ -197,7 +197,7 @@ export function ChatPanel() {
           <div className="message__text">{item.text}</div>
           <span className="message__time">{new Date(item.sentAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
         </div>)}
-        {waiting && <div className="message message--assistant"><div className="message__text">{liveText || 'Мэйюрэн печатает…'}</div></div>}
+        {(waiting || (uncertain && liveText)) && <div className="message message--assistant"><div className="message__text">{liveText || 'Мэйюрэн печатает…'}{uncertain && !waiting ? '\n\n[Частичный ответ, не сохранён в истории]' : ''}</div></div>}
       </div>
       {error && <p role="alert" className="chat-panel__error">{error}</p>}
       {uncertain && !waiting && <button type="button" className="chat-panel__new-request" onClick={() => {
