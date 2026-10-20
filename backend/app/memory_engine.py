@@ -76,10 +76,6 @@ class MemoryEngine:
                     status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
                     created_at INTEGER NOT NULL
                 )""")
-                conn.execute("""CREATE TABLE IF NOT EXISTS memory_revisions (
-                    id TEXT PRIMARY KEY, item_id TEXT NOT NULL, content TEXT NOT NULL,
-                    revision INTEGER NOT NULL, changed_at INTEGER NOT NULL
-                )""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_tombstones (
                     fingerprint TEXT PRIMARY KEY, created_at INTEGER NOT NULL
                 )""")
@@ -120,8 +116,6 @@ class MemoryEngine:
                         "VALUES(?,?,?,'legacy','confirmed',?,?)",
                         (row["id"],row["content"],digest(row["content"]),row["created_at"],row["created_at"]),
                     )
-                # Переносим старую таблицу, не оставляя скрытых копий удалённых фактов.
-                conn.execute("DELETE FROM memory_facts")
                 conn.execute(
                     "INSERT INTO memory_fts(item_id,content) "
                     "SELECT m.id,m.content FROM memory_items m "
@@ -190,9 +184,6 @@ class MemoryEngine:
                 if digest(old["content"]) != digest(content):
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (old["fingerprint"],now()))
-                conn.execute(
-                    "INSERT INTO memory_revisions VALUES(?,?,?,?,?)",
-                    (str(uuid.uuid4()),item_id,old["content"],old["revision"],now()))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
@@ -210,16 +201,16 @@ class MemoryEngine:
                     return False
                 conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",(old["fingerprint"],now()))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
-                conn.execute("DELETE FROM memory_revisions WHERE item_id=?",(item_id,))
                 conn.execute("DELETE FROM memory_items WHERE id=?",(item_id,))
-                conn.execute("UPDATE memory_candidates SET status='rejected' WHERE fingerprint=?",
-                             (old["fingerprint"],))
-                # Автосводки могут содержать удалённый факт: запрещаем их использование.
+                # В предыдущих версиях копия ручного факта оставалась в memory_facts.
+                conn.execute("DELETE FROM memory_facts WHERE id=?",(item_id,))
+                conn.execute("DELETE FROM memory_candidates WHERE fingerprint=?",(old["fingerprint"],))
+                # Не оставляем производные сводки с потенциально удалённой информацией.
                 if old["conversation_id"]!="global":
-                    conn.execute("UPDATE memory_summaries SET status='invalid',cloud_allowed=0 WHERE conversation_id=?",
+                    conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",
                                  (old["conversation_id"],))
                 else:
-                    conn.execute("UPDATE memory_summaries SET status='invalid',cloud_allowed=0")
+                    conn.execute("DELETE FROM memory_summaries")
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -227,17 +218,13 @@ class MemoryEngine:
             row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
             if not row:
                 return None
-            revisions=conn.execute(
-                "SELECT revision,content,changed_at FROM memory_revisions WHERE item_id=? ORDER BY revision",
-                (item_id,)).fetchall()
             source=None
             if row["source_message_id"]:
                 src=conn.execute("SELECT id,text FROM messages WHERE id=? AND role='user'",
                                  (row["source_message_id"],)).fetchone()
                 if src:
                     source=dict(id=src["id"],text=src["text"])
-        return dict(item=self._item(row),source=source,sourceAvailable=source is not None,
-                    revisions=[dict(revision=r["revision"],content=r["content"],changedAt=r["changed_at"]) for r in revisions])
+        return dict(item=self._item(row),source=source,sourceAvailable=source is not None)
 
     def candidates(self) -> list[dict]:
         with closing(db.connection(self.path)) as conn:
@@ -255,6 +242,8 @@ class MemoryEngine:
                     return None
                 if not approve:
                     conn.execute("UPDATE memory_candidates SET status='rejected' WHERE id=?",(candidate_id,))
+                    conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
+                                 (row["fingerprint"],now()))
                     return dict(approved=False)
                 if SECRET.search(row["content"]):
                     raise ValueError("Нельзя сохранять обнаруженный секрет.")
@@ -297,9 +286,13 @@ class MemoryEngine:
                         (now(),)).fetchone()
                     if not row:
                         break
-                    conn.execute(
-                        "UPDATE memory_jobs SET state='running',lease_until=?,attempts=attempts+1 WHERE id=?",
-                        (now()+30000,row["id"]))
+                    leased=conn.execute(
+                        "UPDATE memory_jobs SET state='running',lease_until=?,attempts=attempts+1 "
+                        "WHERE id=? AND (state='pending' OR (state='running' AND lease_until<?))",
+                        (now()+30000,row["id"],now())
+                    ).rowcount
+                    if leased!=1:
+                        continue
             try:
                 if row["kind"]=="extract" and self.policy()["auto_extract"]:
                     self._extract(row["ref_id"],row["conversation_id"])
@@ -405,8 +398,6 @@ class MemoryEngine:
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (item["fingerprint"],now()))
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item["id"],))
-                for item in ids:
-                    conn.execute("DELETE FROM memory_revisions WHERE item_id=?",(item["id"],))
                 conn.execute("DELETE FROM memory_items WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))

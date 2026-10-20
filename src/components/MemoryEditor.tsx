@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import {
-  addMemoryFact, changeMemoryPolicy, clearHistory, editMemoryFact, explainMemoryFact,
-  getMemoryCandidates, getMemoryFacts, getMemoryStatus, getMemorySummaries,
-  loadMemory, processMemory, removeMemoryFact, reviewMemoryCandidate,
-  reviewMemorySummary, saveMemory,
+  addMemoryFact, clearHistory, explainMemoryFact, getMemoryCandidates, getMemoryFacts,
+  getMemoryPolicy, getMemoryStatus, getMemorySummaries, loadMemory, processMemoryJobs,
+  removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
+  setMemoryPolicy, updateMemoryFact,
 } from '../services/chatApi';
-import type { MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryStatus, MemorySummary } from '../services/chatApi';
+import type {
+  MemoryCandidate, MemoryFact, MemoryPolicy, MemoryStatus, MemorySummary,
+} from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
 export function MemoryEditor({ active }: { active: boolean }) {
@@ -14,197 +16,222 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [facts, setFacts] = useState<MemoryFact[]>([]);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [summaries, setSummaries] = useState<MemorySummary[]>([]);
+  const [policy, setPolicy] = useState<MemoryPolicy | null>(null);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [factDraft, setFactDraft] = useState('');
-  const [explanation, setExplanation] = useState<MemoryExplanation | null>(null);
+  const [factCloud, setFactCloud] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [loadedFacts, loadedCandidates, loadedSummaries, loadedStatus] = await Promise.all([
-      getMemoryFacts(), getMemoryCandidates(), getMemorySummaries(), getMemoryStatus(),
+    const [n, f, c, s, p, state] = await Promise.all([
+      loadMemory(), getMemoryFacts(), getMemoryCandidates(),
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(),
     ]);
-    setFacts(loadedFacts);
-    setCandidates(loadedCandidates);
-    setSummaries(loadedSummaries);
-    setStatus(loadedStatus);
+    setNotes(n); setFacts(f); setCandidates(c); setSummaries(s); setPolicy(p); setStatus(state);
   }
 
   useEffect(() => {
     if (!active) return;
-    let cancelled = false;
-    void Promise.all([loadMemory(), getMemoryFacts(), getMemoryCandidates(), getMemorySummaries(), getMemoryStatus()])
-      .then(([text, items, pending, briefs, state]) => {
-        if (cancelled) return;
-        setNotes(text); setFacts(items); setCandidates(pending); setSummaries(briefs); setStatus(state);
-        setError('');
-      }).catch((cause: unknown) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : 'Не удалось загрузить память');
-      });
-    return () => { cancelled = true; };
+    let mounted = true;
+    void Promise.all([
+      loadMemory(), getMemoryFacts(), getMemoryCandidates(),
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(),
+    ]).then(([n, f, c, s, p, state]) => {
+      if (mounted) {
+        setNotes(n); setFacts(f); setCandidates(c);
+        setSummaries(s); setPolicy(p); setStatus(state);
+      }
+    }).catch((cause: unknown) => {
+      if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
+    });
+    return () => { mounted = false; };
   }, [active]);
 
-  async function run(work: () => Promise<void>, success: string) {
+  async function action(task: () => Promise<string>) {
+    if (busy) return;
     setBusy(true); setError(''); setMessage('');
     try {
-      await work();
+      const result = await task();
       await refresh();
-      setMessage(success);
+      setMessage(result);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Операция памяти не выполнена');
+      setError(cause instanceof Error ? cause.message : 'Не удалось изменить память');
     } finally { setBusy(false); }
   }
 
-  function updatePolicy(key: keyof MemoryPolicy, value: boolean) {
-    void run(async () => {
-      const updated = await changeMemoryPolicy({ [key]: value });
-      setStatus(current => current ? { ...current, policy: updated } : null);
-    }, 'Разрешения памяти обновлены.');
+  async function updatePolicy(key: keyof MemoryPolicy, value: boolean) {
+    if (value && (key === 'allow_cloud_notes' || key === 'allow_cloud_facts')) {
+      if (!window.confirm('Разрешить передачу указанной категории памяти в Cloud.ru при включённом облачном чате?')) return;
+    }
+    await action(async () => {
+      await setMemoryPolicy({ [key]: value });
+      return 'Разрешения памяти обновлены.';
+    });
   }
 
-  function reviewCandidate(candidate: MemoryCandidate, approve: boolean) {
-    void run(() => reviewMemoryCandidate(candidate.id, approve), approve
-      ? 'Воспоминание подтверждено и сохранено локально. Облачная передача выключена.'
-      : 'Предложение отклонено.');
+  async function addFact() {
+    if (!factDraft.trim()) return;
+    await action(async () => {
+      await addMemoryFact(factDraft.trim(), factCloud);
+      setFactDraft(''); setFactCloud(false);
+      return 'Воспоминание сохранено.';
+    });
   }
 
-  function reviewSummary(summary: MemorySummary, approve: boolean) {
-    void run(() => reviewMemorySummary(summary.conversationId, approve), approve
-      ? 'Локальная выписка подтверждена. В Cloud.ru не отправляется.'
-      : 'Выписка отклонена.');
+  async function editFact(fact: MemoryFact) {
+    const content = window.prompt('Изменить воспоминание', fact.content);
+    if (!content?.trim() || content === fact.content) return;
+    await action(async () => {
+      await updateMemoryFact(fact, content.trim(), fact.cloudAllowed);
+      return 'Воспоминание исправлено.';
+    });
   }
 
-  function editFact(item: MemoryFact) {
-    const content = window.prompt('Исправить воспоминание', item.content);
-    if (content === null || !content.trim()) return;
-    void run(async () => {
-      await editMemoryFact(item, { content: content.trim(), cloudAllowed: item.cloudAllowed, expiresAt: item.expiresAt });
-    }, 'Воспоминание исправлено, ревизия сохранена.');
+  async function toggleFactCloud(fact: MemoryFact) {
+    const next = !fact.cloudAllowed;
+    if (next && !window.confirm('Разрешить передачу этого факта Cloud.ru?')) return;
+    await action(async () => {
+      await updateMemoryFact(fact, fact.content, next);
+      return next ? 'Факт разрешён для Cloud.ru.' : 'Передача факта запрещена.';
+    });
   }
 
-  function toggleFactCloud(item: MemoryFact) {
-    if (!item.cloudAllowed && !window.confirm('Разрешить передавать это воспоминание Cloud.ru? Для передачи также должен быть включён общий переключатель.')) return;
-    void run(async () => {
-      await editMemoryFact(item, { content: item.content, cloudAllowed: !item.cloudAllowed, expiresAt: item.expiresAt });
-    }, 'Права передачи обновлены.');
+  async function explain(fact: MemoryFact) {
+    await action(async () => {
+      const result = await explainMemoryFact(fact.id);
+      window.alert(result.source
+        ? 'Источник: ' + result.source.text
+        : 'Источник не указан или исходное сообщение удалено. Тип: ' + fact.kind);
+      return 'Информация об источнике открыта.';
+    });
   }
 
-  function forget(item: MemoryFact) {
-    if (!window.confirm('Удалить воспоминание, его ревизии и индекс? Исходное сообщение в истории удаляется отдельно.')) return;
-    void run(async () => {
-      await removeMemoryFact(item.id);
-      if (explanation?.item.id === item.id) setExplanation(null);
-    }, 'Воспоминание и производный поисковый индекс удалены.');
+  async function forget(fact: MemoryFact) {
+    if (!window.confirm('Забыть этот факт? Он будет исключён из поиска и выписок, но исходная переписка сохраняется отдельно.')) return;
+    await action(async () => {
+      await removeMemoryFact(fact.id);
+      return 'Воспоминание удалено из Memory Core.';
+    });
   }
 
-  async function explain(item: MemoryFact) {
-    setError('');
-    try { setExplanation(await explainMemoryFact(item.id)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось открыть источник'); }
+  async function review(candidate: MemoryCandidate, approve: boolean) {
+    await action(async () => {
+      await reviewMemoryCandidate(candidate.id, approve, false);
+      return approve ? 'Кандидат подтверждён и сохранён только локально.' : 'Кандидат отклонён.';
+    });
   }
 
-  if (!active) return null;
-  const policy = status?.policy;
+  async function reviewSummary(summary: MemorySummary, approve: boolean) {
+    await action(async () => {
+      await reviewMemorySummary(summary.conversationId, approve, false);
+      return approve ? 'Выписка подтверждена. В облако не передаётся.' : 'Выписка отклонена.';
+    });
+  }
+
+  async function eraseHistory() {
+    if (!window.confirm('Удалить историю ОСНОВНОГО диалога вместе с её производной памятью? Другие диалоги и глобальная память останутся.')) return;
+    await action(async () => {
+      await clearHistory();
+      clearChat();
+      return 'Основной диалог и связанные воспоминания очищены.';
+    });
+  }
+
   return (
-    <section className="memory-editor memory-core" aria-label="Единая память Мэйюрэн">
-      <h3>Memory Core · память Мэйюрэн</h3>
-      <p>Один локальный модуль: поиск, кандидаты, выписки, ревизии и забывание. Анализ выполняется на ноутбуке без дополнительных платных запросов.</p>
-      {status && <p className="memory-core__statistics">
-        {status.facts} фактов · {status.pending} на подтверждении · {status.summaries} выписок · {status.jobs} задач
-      </p>}
-      {policy && <fieldset className="memory-core__policy" disabled={busy}>
-        <legend>Правила памяти</legend>
-        <label><input type="checkbox" checked={policy.auto_extract} onChange={e => updatePolicy('auto_extract', e.target.checked)} />
-          Автоматически искать кандидатов в сообщениях</label>
-        <label><input type="checkbox" checked={policy.auto_summaries} onChange={e => updatePolicy('auto_summaries', e.target.checked)} />
-          Создавать локальные выписки длинных диалогов</label>
-        <label><input type="checkbox" checked={policy.allow_cloud_facts} onChange={e => updatePolicy('allow_cloud_facts', e.target.checked)} />
-          Разрешить Cloud.ru только отдельно отмеченные факты</label>
-        <label><input type="checkbox" checked={policy.allow_cloud_notes} onChange={e => updatePolicy('allow_cloud_notes', e.target.checked)} />
-          Разрешить передачу общей заметки Cloud.ru</label>
-      </fieldset>}
-      <p>Даже при разрешённой памяти текст текущего сообщения и история чата отдельно передаются Cloud.ru в облачном режиме.</p>
+    <section className="memory-editor memory-core" aria-label="Управление памятью Meiyuren">
+      <h3>Memory Core · умная память</h3>
+      <p>SQLite работает локально. Новые факты предлагает автоматический анализ без AI, но сохраняются они только после подтверждения.</p>
+      {status && <div className="memory-core__stats">
+        <span>Фактов: {status.facts}</span>
+        <span>Ожидают: {status.pending}</span>
+        <span>Очередь: {status.jobs}</span>
+      </div>}
+      <button type="button" disabled={busy} onClick={() => void action(async () => {
+        const result = await processMemoryJobs();
+        return 'Локально обработано задач: ' + result.processed;
+      })}>Обработать очередь памяти</button>
 
-      <label htmlFor="meiyuren-memory-notes">Общая заметка (только локально, пока не разрешена передача)</label>
-      <textarea id="meiyuren-memory-notes" rows={3} maxLength={4000} value={notes} disabled={busy}
-        onChange={e => setNotes(e.target.value)} placeholder="Что Мэйюрэн должна помнить?" />
-      <div className="memory-editor__actions">
-        <button type="button" disabled={busy} onClick={() => void run(() => saveMemory(notes), 'Заметка сохранена в SQLite.')}>
-          Сохранить заметку
-        </button>
-        <button type="button" disabled={busy} onClick={() => void run(async () => {
-          const processed = await processMemory();
-          setStatus(processed);
-        }, 'Локальные задания обработаны.')}>Обработать очередь</button>
-      </div>
+      <h4>Разрешения</h4>
+      <p>По умолчанию память и заметки не передаются Cloud.ru. История текущего диалога передаётся провайдеру, когда включён облачный чат.</p>
+      {policy && ([
+        ['allow_cloud_notes', 'Разрешить передачу заметки Cloud.ru'],
+        ['allow_cloud_facts', 'Разрешить передачу одобренных фактов Cloud.ru'],
+        ['auto_extract', 'Автоматически искать кандидатов (локально)'],
+        ['auto_summaries', 'Автоматически создавать выписки (локально)'],
+      ] as const).map(([key, caption]) =>
+        <label className="memory-core__toggle" key={key}>
+          <input type="checkbox" checked={policy[key]} disabled={busy}
+            onChange={event => void updatePolicy(key, event.target.checked)} />
+          <span>{caption}</span>
+        </label>)}
 
-      <h3>Добавить подтверждённый факт</h3>
-      <input aria-label="Новый факт памяти" value={factDraft} maxLength={500} disabled={busy}
-        placeholder="Например: предпочитаю короткие ответы"
+      <h4>Заметка пользователя</h4>
+      <textarea aria-label="Заметка памяти" rows={3} maxLength={4000} value={notes}
+        disabled={busy} onChange={e => setNotes(e.target.value)} />
+      <button type="button" disabled={busy} onClick={() => void action(async () => {
+        await saveMemory(notes);
+        return 'Заметка сохранена.';
+      })}>Сохранить заметку</button>
+
+      <h4>Добавить воспоминание</h4>
+      <input aria-label="Новый факт" maxLength={500} value={factDraft} disabled={busy}
+        placeholder="Например: я изучаю Python"
         onChange={e => setFactDraft(e.target.value)} />
-      <button type="button" disabled={busy || !factDraft.trim()} onClick={() => void run(async () => {
-        await addMemoryFact(factDraft.trim());
-        setFactDraft('');
-      }, 'Факт сохранён локально.')}>＋ Запомнить</button>
+      <label className="memory-core__toggle">
+        <input type="checkbox" disabled={busy} checked={factCloud} onChange={e => {
+          if (e.target.checked && !window.confirm('Разрешить этому факту передачу Cloud.ru?')) return;
+          setFactCloud(e.target.checked);
+        }} />
+        <span>Разрешить передачу этого факта Cloud.ru</span>
+      </label>
+      <button type="button" disabled={busy || !factDraft.trim()} onClick={() => void addFact()}>＋ Запомнить факт</button>
 
-      <h3>Предложения на подтверждение ({candidates.length})</h3>
-      {candidates.length === 0 && <p>Нет новых предложений. Система не сохраняет догадки автоматически.</p>}
+      <h4>Предложения на сохранение ({candidates.length})</h4>
+      {candidates.length === 0 && <p>Пока предложений нет.</p>}
       <ul className="memory-core__list">
         {candidates.map(candidate => <li key={candidate.id}>
-          <span>{candidate.content}<small>Источник: сообщение пользователя</small></span>
-          <div>
-            <button type="button" disabled={busy} onClick={() => reviewCandidate(candidate, true)}>Подтвердить</button>
-            <button type="button" disabled={busy} onClick={() => reviewCandidate(candidate, false)}>Отклонить</button>
+          <span>{candidate.content}</span>
+          <div className="memory-core__actions">
+            <button type="button" disabled={busy} onClick={() => void review(candidate, true)}>Запомнить</button>
+            <button type="button" disabled={busy} onClick={() => void review(candidate, false)}>Отклонить</button>
           </div>
         </li>)}
       </ul>
 
-      <h3>Подтверждённая память ({facts.length})</h3>
-      {facts.length === 0 && <p>Нет сохранённых фактов.</p>}
+      <h4>Сохранённые воспоминания ({facts.length})</h4>
+      {facts.length === 0 && <p>Память пока пуста.</p>}
       <ul className="memory-core__list">
-        {facts.map(item => <li key={item.id}>
-          <span>{item.content}
-            <small>{item.kind === 'legacy' ? 'Импортировано из старой памяти · источник неизвестен'
-              : item.kind === 'extracted' ? 'Подтверждено из переписки' : 'Добавлено вручную'} · ревизия {item.revision}</small>
-          </span>
-          <div>
-            <button type="button" disabled={busy} onClick={() => void explain(item)}>Почему?</button>
-            <button type="button" disabled={busy} onClick={() => editFact(item)}>Изменить</button>
-            <button type="button" disabled={busy} onClick={() => toggleFactCloud(item)}>
-              {item.cloudAllowed ? 'Cloud.ru: да' : 'Cloud.ru: нет'}
-            </button>
-            <button type="button" disabled={busy} onClick={() => forget(item)}>Удалить</button>
+        {facts.map(fact => <li key={fact.id}>
+          <span>{fact.content}</span>
+          <small>{fact.kind === 'legacy' ? 'Из прежней версии — источник не подтверждён' : 'Ревизия ' + fact.revision}
+            {fact.cloudAllowed ? ' · Cloud разрешён' : ' · Только локально'}</small>
+          <div className="memory-core__actions">
+            <button type="button" disabled={busy} onClick={() => void explain(fact)}>Почему?</button>
+            <button type="button" disabled={busy} onClick={() => void editFact(fact)}>Изменить</button>
+            <button type="button" disabled={busy} onClick={() => void toggleFactCloud(fact)}>{fact.cloudAllowed ? 'Запретить Cloud' : 'Разрешить Cloud'}</button>
+            <button type="button" disabled={busy} onClick={() => void forget(fact)}>Забыть</button>
           </div>
         </li>)}
       </ul>
-      {explanation && <div className="memory-core__explanation">
-        <strong>Почему Мэйюрэн это помнит?</strong>
-        <p>{explanation.item.content}</p>
-        <p>Источник: {explanation.source?.text ?? 'Недоступен или добавлено вручную'}</p>
-        <p>Ревизий: {explanation.revisions.length}; версия: {explanation.item.revision}</p>
-        {explanation.revisions.map(rev => <p key={rev.revision}>Версия {rev.revision}: {rev.content}</p>)}
-        <button type="button" onClick={() => setExplanation(null)}>Закрыть</button>
-      </div>}
 
-      <h3>Локальные выписки диалогов</h3>
-      {summaries.length === 0 && <p>После достаточно длинного разговора появится выписка на проверку.</p>}
+      <h4>Локальные выписки диалогов ({summaries.length})</h4>
+      <p>Автоматически формируются из сообщений. Не являются проверенными фактами, пока ты их не подтвердишь.</p>
       <ul className="memory-core__list">
         {summaries.map(summary => <li key={summary.conversationId}>
-          <span className="memory-core__summary">{summary.content}<small>Статус: {summary.status}</small></span>
-          {summary.status === 'draft' && <div>
-            <button type="button" disabled={busy} onClick={() => reviewSummary(summary, true)}>Подтвердить</button>
-            <button type="button" disabled={busy} onClick={() => reviewSummary(summary, false)}>Отклонить</button>
-          </div>}
+          <strong>Диалог: {summary.conversationId === 'main' ? 'Основной' : summary.conversationId.slice(0, 8)}</strong>
+          <pre>{summary.content}</pre>
+          <small>{summary.status === 'draft' ? 'Ожидает подтверждения' : 'Подтверждена · локально'}</small>
+          <div className="memory-core__actions">
+            {summary.status === 'draft' && <button type="button" disabled={busy}
+              onClick={() => void reviewSummary(summary, true)}>Подтвердить</button>}
+            <button type="button" disabled={busy}
+              onClick={() => void reviewSummary(summary, false)}>Удалить выписку</button>
+          </div>
         </li>)}
       </ul>
-
-      <div className="memory-editor__actions">
-        <button type="button" disabled={busy} onClick={() => {
-          if (!window.confirm('Удалить всю историю ОСНОВНОГО диалога и связанные с ней извлечённые факты? Другие диалоги останутся.')) return;
-          void run(async () => { await clearHistory(); clearChat(); }, 'История основного диалога очищена.');
-        }}>Очистить основной диалог</button>
-      </div>
+      <button type="button" disabled={busy} onClick={() => void eraseHistory()}>Очистить основной диалог</button>
       {error && <p className="memory-editor__error" role="alert">{error}</p>}
       {message && <p className="memory-editor__success" role="status">{message}</p>}
     </section>

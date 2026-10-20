@@ -115,7 +115,7 @@ export default function App() {
       <footer className="site-footer">
         <span>✦ MEIYUREN © 2026</span>
         <span>Создано с любовью к маленьким чудесам</span>
-        <span className="site-footer__version">v0.5 · Cloud.ru</span>
+        <span className="site-footer__version">v0.7 · Memory Core</span>
       </footer>
 
       <IconSidebar
