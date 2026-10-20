@@ -284,6 +284,11 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def read_cloud_models() -> dict:
         return {"models": await cloud.available_models()}
 
+    @app.get("/api/cloud/compatibility")
+    async def cloud_compatibility(model: str = Query(min_length=1, max_length=160)) -> dict:
+        # Только GET /models: никакой платной пробной генерации.
+        return await cloud.model_compatibility(model)
+
     @app.get("/api/cloud/diagnostics")
     async def cloud_diagnostics() -> dict:
         current = db.cloud_config(database)
