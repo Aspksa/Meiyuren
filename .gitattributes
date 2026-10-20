@@ -1,0 +1,4 @@
+# cmd.exe читает .cmd/.bat построчно и ломается на LF-переводах строк.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf

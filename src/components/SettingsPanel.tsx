@@ -1,4 +1,5 @@
-import { useAppStore } from '../store/useAppStore';
+import { useEffect, useState } from 'react';
+import { OPACITY_MAX, OPACITY_MIN, SIZE_MAX, SIZE_MIN, useAppStore } from '../store/useAppStore';
 
 export function SettingsPanel() {
   const open = useAppStore((s) => s.settingsOpen);
@@ -12,11 +13,20 @@ export function SettingsPanel() {
   const setGreeting = useAppStore((s) => s.setGreetingEnabled);
   const resetPosition = useAppStore((s) => s.resetPosition);
   const clearChat = useAppStore((s) => s.clearChat);
+  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [open]);
 
   if (!open) return null;
-  const width = Math.min(320, window.innerWidth - 24);
-  const left = Math.max(12, Math.min(anchor.x, window.innerWidth - width - 12));
-  const top = Math.max(12, Math.min(anchor.y, window.innerHeight - Math.min(390, window.innerHeight - 24) - 12));
+  const width = Math.min(320, viewport.width - 24);
+  const left = Math.max(12, Math.min(anchor.x, viewport.width - width - 12));
+  const top = Math.max(12, Math.min(anchor.y, viewport.height - Math.min(390, viewport.height - 24) - 12));
 
   return (
     <aside className="settings-panel" role="dialog" aria-label="Настройки аватара" style={{ left, top, width }}>
@@ -31,11 +41,11 @@ export function SettingsPanel() {
       <div className="settings-panel__body">
         <label className="setting">
           <span className="setting__heading"><span>Размер аватара</span><output>{size} px</output></span>
-          <input type="range" min="160" max="420" step="10" value={size} onChange={(event) => setSize(Number(event.target.value))} />
+          <input type="range" min={SIZE_MIN} max={SIZE_MAX} step="10" value={size} onChange={(event) => setSize(Number(event.target.value))} />
         </label>
         <label className="setting">
           <span className="setting__heading"><span>Прозрачность</span><output>{Math.round(opacity * 100)}%</output></span>
-          <input type="range" min="0.4" max="1" step="0.05" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} />
+          <input type="range" min={OPACITY_MIN} max={OPACITY_MAX} step="0.05" value={opacity} onChange={(event) => setOpacity(Number(event.target.value))} />
         </label>
         <label className="setting setting--toggle">
           <span><strong>Приветствие в чате</strong><small>Показывать при первом открытии</small></span>

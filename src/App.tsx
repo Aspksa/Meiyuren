@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Avatar } from './components/Avatar';
 import { ChatPanel } from './components/ChatPanel';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -12,14 +13,25 @@ const interactions = [
 export default function App() {
   const openChat = useAppStore((s) => s.openChat);
   const openSettings = useAppStore((s) => s.openSettings);
-  const closeSettings = useAppStore((s) => s.closeSettings);
+
+  // Escape слушаем на window: так он работает, даже когда фокус на body.
+  // Сначала закрываются настройки (они поверх), затем чат.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      const state = useAppStore.getState();
+      if (state.settingsOpen) state.closeSettings();
+      else if (state.chatOpen) state.closeChat();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   return (
-    <div className="site" onKeyDown={(event) => {
-      if (event.key === 'Escape') closeSettings();
-    }}>
+    <div className="site">
       <div className="ambient ambient--one" aria-hidden="true" />
       <div className="ambient ambient--two" aria-hidden="true" />
+      <div className="sparks" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div>
 
       <header className="site-header">
         <a href="#home" className="brand" aria-label="Meiyuren — на главную">

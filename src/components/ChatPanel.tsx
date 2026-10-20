@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
+import { startingPosition } from '../lib/position';
 import { replyAfterDelay } from '../services/replies';
 import { useAppStore } from '../store/useAppStore';
 
@@ -7,14 +8,16 @@ export function ChatPanel() {
   const closeChat = useAppStore((s) => s.closeChat);
   const messages = useAppStore((s) => s.messages);
   const addMessage = useAppStore((s) => s.addMessage);
+  const position = useAppStore((s) => s.position);
+  const size = useAppStore((s) => s.size);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (chatOpen) inputRef.current?.focus();
-  }, [chatOpen]);
+    if (chatOpen && !waiting) inputRef.current?.focus();
+  }, [chatOpen, waiting]);
 
   useEffect(() => {
     if (chatOpen) listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' });
@@ -22,26 +25,33 @@ export function ChatPanel() {
 
   if (!chatOpen) return null;
 
+  // Чат открывается с той стороны, где нет аватара, чтобы не закрывать её собой.
+  const avatarX = (position ?? startingPosition(size, window.innerWidth, window.innerHeight)).x;
+  const side = avatarX + size / 2 > window.innerWidth / 2 ? 'left' : 'right';
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = draft.trim();
     if (!text || waiting) return;
     setDraft('');
-    addMessage('user', text);
+    const questionId = addMessage('user', text);
     setWaiting(true);
     try {
       const answer = await replyAfterDelay(text);
-      addMessage('assistant', answer);
+      // Если чат очистили, пока шёл ответ, вопроса уже нет и отвечать некому.
+      if (useAppStore.getState().messages.some((item) => item.id === questionId)) {
+        addMessage('assistant', answer);
+      }
     } finally {
+      // Фокус вернёт эффект выше, когда поле снова станет активным.
       setWaiting(false);
-      inputRef.current?.focus();
     }
   }
 
   return (
-    <section className="chat-panel" role="dialog" aria-label="Чат с Мэйюрэн">
+    <section className={`chat-panel chat-panel--${side}`} role="dialog" aria-label="Чат с Мэйюрэн">
       <header className="panel-header">
-        <span className="panel-header__mark">✦</span>
+        <span className="panel-header__mark"><img className="panel-header__portrait" src={`${import.meta.env.BASE_URL}assets/avatar/meiyuren.webp`} alt="" /></span>
         <div>
           <strong>Мэйюрэн</strong>
           <span className="panel-header__sub">Демо-чат · локальные ответы</span>

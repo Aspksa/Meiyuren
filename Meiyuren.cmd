@@ -1,11 +1,14 @@
 @echo off
+rem This file must stay ASCII-only with CRLF line endings (see .gitattributes):
+rem cmd.exe misreads UTF-8 batch files, breaking lines apart on Cyrillic text.
+rem Messages for the user are printed by scripts/start.mjs, which handles UTF-8.
 setlocal EnableExtensions
 chcp 65001 >nul
-title Meiyuren - локальный веб-аватар
+title Meiyuren
 cd /d "%~dp0"
 if errorlevel 1 goto directory_error
 
-rem Если рядом лежит runtime\node.exe, используем его вместо системного Node.
+rem Prefer runtime\node.exe next to the project, so it can run without a system Node.
 if exist "%~dp0runtime\node.exe" (
   set "NODE_BIN=%~dp0runtime\node.exe"
 ) else (
@@ -14,40 +17,40 @@ if exist "%~dp0runtime\node.exe" (
   set "NODE_BIN=node.exe"
 )
 
-rem Проверяем зависимости относительно папки проекта, а не буквы диска.
+rem Install dependencies only when they are missing.
 if not exist "%~dp0node_modules\vite\package.json" (
-  echo [Meiyuren] Зависимости не найдены. Устанавливаю...
+  echo [Meiyuren] Installing dependencies, this happens once...
   where npm.cmd >nul 2>nul
   if errorlevel 1 goto npm_missing
   call npm.cmd install --no-audit --no-fund
   if errorlevel 1 goto install_error
 )
 
-echo [Meiyuren] Запускаю приложение...
+echo [Meiyuren] Starting...
 "%NODE_BIN%" "%~dp0scripts\start.mjs"
 if errorlevel 1 goto start_error
 exit /b 0
 
 :node_missing
-echo [ОШИБКА] Не найден Node.js. Установите Node.js 20+.
-echo Для запуска без системного Node положите node.exe в папку runtime.
+echo [ERROR] Node.js not found. Install Node.js 20+ from https://nodejs.org
+echo         or put node.exe into the runtime folder.
 goto failed
 
 :npm_missing
-echo [ОШИБКА] Пакеты не установлены, а npm не найден.
-echo Установите Node.js с npm или заранее перенесите папку node_modules.
+echo [ERROR] Dependencies are not installed and npm was not found.
+echo         Install Node.js with npm, or copy the node_modules folder here.
 goto failed
 
 :directory_error
-echo [ОШИБКА] Не удалось открыть папку Meiyuren.
+echo [ERROR] Cannot open the Meiyuren folder.
 goto failed
 
 :install_error
-echo [ОШИБКА] Не удалось установить зависимости. Проверьте подключение к интернету.
+echo [ERROR] npm install failed. Check your internet connection.
 goto failed
 
 :start_error
-echo [ОШИБКА] Сервер завершился с ошибкой.
+echo [ERROR] The server stopped with an error, see the messages above.
 goto failed
 
 :failed

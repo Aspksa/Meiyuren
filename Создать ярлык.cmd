@@ -1,13 +1,13 @@
 @echo off
+rem ASCII-only with CRLF line endings: cmd.exe misreads UTF-8 batch files.
 setlocal EnableExtensions
-chcp 65001 >nul
 cd /d "%~dp0"
-echo [Meiyuren] Создаю ярлык на рабочем столе...
+echo [Meiyuren] Creating a desktop shortcut...
 cscript.exe //nologo "%~dp0scripts\create-shortcut.vbs"
 if errorlevel 1 (
-  echo [ОШИБКА] Не удалось создать ярлык.
+  echo [ERROR] Could not create the shortcut.
 ) else (
-  echo [Meiyuren] Ярлык готов. Запускайте через значок на рабочем столе.
+  echo [Meiyuren] Done. Start Meiyuren from the desktop icon.
 )
 echo.
 pause
