@@ -1,6 +1,8 @@
 """Локальный FastAPI API: чат SQLite, память и Cloud.ru Foundation Models."""
 from pathlib import Path
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
+import os
+import sqlite3
 import logging
 import asyncio
 import json
@@ -66,11 +68,24 @@ class CloudSettingsInput(BaseModel):
 
 def create_app(db_path: Path | None = None) -> FastAPI:
     database = db_path if db_path is not None else db.default_database()
-    existed = database.exists()
+    existed = database.is_file()
+    if existed:
+        # Резервная копия ДО миграций, а не после изменения старой схемы.
+        backup = database.with_name(database.name + ".before-memory-core.bak")
+        if not backup.exists():
+            temporary = backup.with_name(backup.name + ".tmp")
+            try:
+                with closing(sqlite3.connect(database)) as source:
+                    with closing(sqlite3.connect(temporary)) as dest:
+                        source.backup(dest)
+                os.replace(temporary, backup)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
     db.initialise(database)
     history.initialise(database)
     engine = MemoryEngine(database)
-    engine.initialize(backup_existing=existed)
+    engine.initialize(backup_existing=False)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -360,6 +375,19 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not changed:
             raise HTTPException(404,detail="Выписка не найдена.")
         return {"success": True}
+
+    @app.get("/api/memory/recall")
+    def preview_memory_recall(
+        q: str = Query(min_length=2, max_length=200),
+        conversationId: str = Query(default="main", max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.preview(q, conversationId, cloudMode)
+
+    @app.get("/api/memory/usage")
+    def memory_usage():
+        return {"entries": engine.usage()}
 
     @app.get("/api/memory/status")
     def memory_status():
