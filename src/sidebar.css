@@ -1,0 +1,111 @@
+/* Узкая навигация без надписей — только SVG-иконки. */
+.side-nav {
+  position: fixed;
+  z-index: 70;
+  top: 50%;
+  left: 18px;
+  transform: translateY(-50%);
+  width: 65px;
+  max-height: calc(100svh - 28px);
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #e5ba7442;
+  border-radius: 24px;
+  background: linear-gradient(165deg, #231c12f2, #15100cf2);
+  box-shadow: 0 14px 46px #0008, inset 0 1px 0 #ffe9b11c;
+  backdrop-filter: blur(20px);
+}
+.side-nav__logo {
+  display: grid;
+  place-items: center;
+  width: 41px;
+  height: 40px;
+  color: #f3d18a;
+  font-size: 25px;
+  line-height: 1;
+  text-shadow: 0 0 18px #db9d4088;
+}
+.side-nav__line { display: block; width: 27px; height: 1px; margin: 4px 0 6px; background: linear-gradient(90deg, transparent, #e3bb7e77, transparent); }
+.side-nav__spacer { min-height: 18px; }
+.side-nav__button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 45px;
+  height: 45px;
+  border: 1px solid transparent;
+  border-radius: 15px;
+  background: transparent;
+  color: #c7aa81;
+  text-decoration: none;
+  transition: border-color .2s, background .2s, transform .2s, color .2s;
+}
+.side-nav__button:hover { background: #e9b97a18; border-color: #e5bd8038; color: #ffe0a2; transform: translateY(-1px); }
+.side-nav__button--active { background: #e1ac6230; border-color: #efcb8d7a; color: #ffdc99; box-shadow: 0 0 16px #ddae6233; }
+.side-nav__button:focus-visible { outline: 2px solid #f7d48f; outline-offset: 2px; }
+.side-nav__update { display: block; width: 31px; height: 31px; object-fit: contain; }
+
+.updater-panel {
+  position: fixed;
+  z-index: 68;
+  top: 50%;
+  left: 94px;
+  transform: translateY(-50%);
+  width: min(435px, calc(100vw - 110px));
+  max-height: calc(100svh - 28px);
+  overflow-y: auto;
+  color: #f8e9cb;
+  border-radius: 22px;
+  border: 1px solid #efc98c5e;
+  background: linear-gradient(145deg, #2b2117f9, #16100ef9);
+  box-shadow: 0 22px 80px #000b, inset 0 1px 0 #ffedce1c;
+  backdrop-filter: blur(24px);
+}
+.updater-panel__header { display: flex; align-items: center; gap: 15px; padding: 22px 23px; border-bottom: 1px solid #e7bd7833; }
+.updater-panel__emblem { flex: none; display: grid; place-items: center; width: 53px; height: 53px; border: 1px solid #d8ad6966; border-radius: 16px; background: #d8ad6914; }
+.updater-panel__emblem img { width: 43px; height: 43px; }
+.updater-panel__eyebrow { color: #be9c67; font-size: 9px; letter-spacing: .19em; }
+.updater-panel h2 { font: italic 28px Georgia, serif; color: #f4d6a3; margin: 4px 0 0; }
+.updater-panel__close { margin-left: auto; align-self: flex-start; flex: none; width: 30px; height: 30px; font-size: 22px; color: #e4c89f; border: 1px solid #e5bc7b35; background: #ffffff09; border-radius: 50%; }
+.updater-panel__body { padding: 23px; }
+.updater-panel__intro { margin: 0 0 23px; font-size: 13px; color: #cbbba6; line-height: 1.7; }
+.updater-panel__version-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 11px; }
+.updater-panel__version-grid > div { padding: 15px; border: 1px solid #efc68a2b; border-radius: 13px; background: #ffffff08; }
+.updater-panel__version-grid span { display: block; color: #ad997e; font-size: 10px; }
+.updater-panel__version-grid strong { display: block; margin-top: 9px; font: 600 20px ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .04em; color: #f3d19b; }
+.updater-panel__ci { display: flex; align-items: center; gap: 11px; margin-top: 14px; padding: 13px 2px; font-size: 12px; color: #c6b9a7; }
+.updater-panel__ci strong { font-size: 12px; margin-left: auto; color: #f0cf98; }
+.updater-panel__signal { display: block; width: 9px; height: 9px; border-radius: 50%; background: #997b65; box-shadow: 0 0 0 4px #b79e7d18; }
+.updater-panel__signal--ok { background: #9bc79e; box-shadow: 0 0 0 4px #9bc79e20; }
+.updater-panel__message, .updater-panel__error, .updater-panel__success { font-size: 12px; padding: 12px 14px; line-height: 1.6; border-radius: 10px; margin: 9px 0 15px; background: #d9b37b0e; border: 1px solid #dfbd8a2c; color: #d5c3a6; overflow-wrap: anywhere; }
+.updater-panel__error { color: #ffc5b6; border-color: #d56b6255; background: #ba46421a; }
+.updater-panel__success { color: #c6e8b9; border-color: #8aa86a6d; background: #6b8d521c; }
+.updater-panel__confirm { padding: 15px; border: 1px solid #e5bb784d; border-radius: 12px; background: #dba9620c; }
+.updater-panel__confirm strong { font-size: 14px; }
+.updater-panel__confirm p { font-size: 12px; line-height: 1.6; color: #c4b29b; }
+.updater-panel__buttons { display: flex; gap: 9px; flex-wrap: wrap; }
+.updater-panel__buttons button { min-height: 40px; border: 1px solid #deb77661; padding: 11px 13px; color: #f6d6a7; border-radius: 10px; background: #ffffff0a; font-size: 12px; }
+.updater-panel__buttons button:not(:disabled):hover { background: #f1c68022; }
+.updater-panel__buttons button:disabled { opacity: .4; cursor: not-allowed; }
+.updater-panel__buttons .updater-panel__primary { background: linear-gradient(130deg,#f2d6a6,#dba65f); color: #281a12; font-weight: 700; }
+.updater-panel__foot { margin-top: 24px; padding-top: 17px; border-top: 1px solid #dfb77b2b; }
+.updater-panel__foot a { font-size: 12px; color: #f4cf92; }
+.updater-panel__foot p { font-size: 10px; line-height: 1.8; color: #a99781; margin: 12px 0 0; }
+.updater-panel__foot code { color: #f4d4a1; }
+
+@media (max-width: 600px) {
+  .side-nav { left: 7px; width: 51px; border-radius: 18px; padding: 7px 3px; }
+  .side-nav__logo { font-size: 19px; width: 36px; height: 32px; }
+  .side-nav__button { width: 39px; height: 40px; border-radius: 11px; }
+  .side-nav__update { width: 27px; height: 27px; }
+  .updater-panel { left: 63px; width: calc(100vw - 70px); }
+  .updater-panel__header { padding: 16px; }
+  .updater-panel__body { padding: 16px; }
+  .updater-panel__eyebrow { font-size: 8px; }
+  .updater-panel h2 { font-size: 24px; }
+  .updater-panel__version-grid strong { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) { .side-nav__button { transition: none; } }

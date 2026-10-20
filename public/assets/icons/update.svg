@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="t d">
+  <title id="t">Meiyuren — обновление</title>
+  <desc id="d">Два золотых оборота вокруг волшебной четырёхлучевой звезды</desc>
+  <defs>
+    <linearGradient id="gold" x1="10" y1="4" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF0C5"/>
+      <stop offset=".55" stop-color="#EEC17D"/>
+      <stop offset="1" stop-color="#A66F3C"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="28" stroke="url(#gold)" stroke-width=".8" opacity=".3"/>
+  <path d="M51 25.2a20.5 20.5 0 0 0-33.3-10.4L11 21" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M11 12v9h9" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M13 38.8a20.5 20.5 0 0 0 33.3 10.4L53 43" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M53 52v-9h-9" stroke="url(#gold)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 20c2.1 7.2 4.8 9.9 12 12-7.2 2.1-9.9 4.8-12 12-2.1-7.2-4.8-9.9-12-12 7.2-2.1 9.9-4.8 12-12Z" fill="url(#gold)" fill-opacity=".2" stroke="url(#gold)" stroke-width="1.8"/>
+  <circle cx="32" cy="32" r="3.2" fill="#FFE4B0"/>
+</svg>
