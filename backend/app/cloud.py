@@ -257,7 +257,10 @@ async def stream_cloud_reply(model: str, history: list[dict], notes: str, user_t
         raise
     except CloudError:
         raise
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError):
+    except httpx.HTTPError as exc:
+        # Переиспользуем диагностику 401/403/402/404/429 и тайм-аутов.
+        raise request_error(exc) from None
+    except (ValueError, TypeError, KeyError, IndexError):
         raise CloudError("Поток Cloud.ru прерван или имеет неверный формат. Повтор может привести к оплате.", 502) from None
     if not ended:
         raise CloudError("Cloud.ru завершил соединение без подтверждения окончания ответа. Повтор не рекомендуется.", 502)
