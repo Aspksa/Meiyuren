@@ -127,6 +127,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def cloud_error_handler(_request: Request, error: cloud.CloudError):
         return JSONResponse({"detail": str(error)}, status_code=error.status)
 
+    @app.exception_handler(history.StaleConversation)
+    async def stale_chat_handler(_request: Request, error: history.StaleConversation):
+        return JSONResponse({"detail": str(error)}, status_code=409)
+
     @app.get("/api/health")
     def health() -> dict:
         settings = db.cloud_config(database)
@@ -161,6 +165,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not text:
             raise HTTPException(status_code=422, detail="Сообщение не может быть пустым")
         require_conversation(body.conversationId)
+        expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
         notes = memory_context(text, body.conversationId, settings["enabled"])
         if settings["enabled"]:
@@ -180,14 +185,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             previous = history.messages(database, body.conversationId, limit=12)
             try:
                 response = await cloud.generate_cloud_reply(settings["model"], previous, notes, text)
-                result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response)
+                result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response, expected_epoch)
                 return observed(result, body.conversationId)
             except Exception:
                 # Сохраняем резервирование: повтор с тем же ID не создаст второй платный вызов.
                 db.fail_request(database, body.requestId)
                 raise
         response = generate_reply(text, notes)
-        return observed(history.append_exchange(database, text, response, body.conversationId), body.conversationId)
+        return observed(history.append_exchange(database, text, response, body.conversationId, expected_epoch), body.conversationId)
 
     @app.delete("/api/chat/messages")
     def remove_messages(conversationId: str = Query(default="main", max_length=40)) -> dict:
@@ -202,6 +207,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not text:
             raise HTTPException(422, detail="Сообщение не может быть пустым.")
         require_conversation(body.conversationId)
+        expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
         if settings["enabled"] and not body.requestId:
             raise HTTPException(422, detail="Для Cloud.ru требуется идентификатор запроса.")
@@ -216,7 +222,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 if not settings["enabled"]:
                     result = observed(history.append_exchange(
                         database, text, generate_reply(text, memory_context(text, body.conversationId, False)),
-                        body.conversationId), body.conversationId)
+                        body.conversationId, expected_epoch), body.conversationId)
                     yield event("delta", {"text": result["assistant"]["text"]})
                     yield event("done", result)
                     return
@@ -240,7 +246,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                     yield event("delta", {"text": piece})
                 answer = "".join(tokens)
                 result = history.complete_cloud_exchange(
-                    database, body.requestId, body.conversationId, text, answer)
+                    database, body.requestId, body.conversationId, text, answer, expected_epoch)
                 completed = True
                 observed(result, body.conversationId)
                 yield event("done", result)
