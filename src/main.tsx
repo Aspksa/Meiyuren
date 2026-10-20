@@ -4,6 +4,7 @@ import App from './App';
 import './styles.css';
 import './theme.css';
 import './sidebar.css';
+import './chat-v04.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -9,3 +9,8 @@ coverage/
 .vscode/
 .idea/
 .meiyuren/
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/

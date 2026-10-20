@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { MemoryEditor } from './MemoryEditor';
 import { AVATARS, avatarUrl } from '../lib/avatars';
 import { OPACITY_MAX, OPACITY_MIN, SIZE_MAX, SIZE_MIN, useAppStore } from '../store/useAppStore';
 
@@ -13,7 +14,6 @@ export function SettingsPanel() {
   const greeting = useAppStore((s) => s.greetingEnabled);
   const setGreeting = useAppStore((s) => s.setGreetingEnabled);
   const resetPosition = useAppStore((s) => s.resetPosition);
-  const clearChat = useAppStore((s) => s.clearChat);
   const avatarId = useAppStore((s) => s.avatarId);
   const setAvatarId = useAppStore((s) => s.setAvatarId);
   const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
@@ -75,9 +75,9 @@ export function SettingsPanel() {
         </label>
         <div className="setting-actions">
           <button type="button" onClick={() => { resetPosition(); close(); }}>Сбросить позицию</button>
-          <button type="button" onClick={clearChat}>Очистить чат</button>
         </div>
-        <p className="settings-panel__hint">Настройки и положение сохраняются только в этом браузере.</p>
+        <MemoryEditor active={open} />
+        <p className="settings-panel__hint">Настройки и положение сохраняются в браузере, история и заметки — локально в SQLite.</p>
       </div>
     </aside>
   );
