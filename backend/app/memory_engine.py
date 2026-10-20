@@ -31,6 +31,16 @@ RUSSIAN_SUFFIXES = tuple(sorted((
     "ая", "ое", "ые", "ие", "ии", "ам", "ям", "ом", "ем",
     "у", "ю", "а", "я", "ы", "и", "е", "о",
 ), key=len, reverse=True))
+def preference_topic(content: str) -> tuple[str, bool] | None:
+    phrase = content.strip().rstrip(".! ")
+    denied = NEGATIVE_PREFERENCE.match(phrase)
+    positive = PREFERENCE.match(phrase)
+    if not (denied or positive):
+        return None
+    topic = canonical((denied or positive).group(1))
+    return (topic, bool(positive))
+
+
 STOPWORDS = frozenset(("мне","что","это","как","или","для","мой","моя","мои","когда",
                       "где","наш","ваш","могу","можно","есть","еще","ещё","хочу",
                       "тебе","меня","будет","было","были","кто","про"))
@@ -146,6 +156,9 @@ class MemoryEngine:
                 columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_candidates)")}
                 if "conflict_with" not in columns:
                     conn.execute("ALTER TABLE memory_candidates ADD COLUMN conflict_with TEXT")
+                item_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_items)")}
+                if "superseded_by" not in item_columns:
+                    conn.execute("ALTER TABLE memory_items ADD COLUMN superseded_by TEXT")
 
                 # FTS5 — только локальный индекс. Данные удаляются вместе с фактом.
                 conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(item_id UNINDEXED, content, tokenize='unicode61')")
@@ -193,7 +206,8 @@ class MemoryEngine:
         return dict(id=row["id"],content=row["content"],createdAt=row["created_at"],
                     updatedAt=row["updated_at"],kind=row["kind"],sourceMessageId=row["source_message_id"],
                     conversationId=row["conversation_id"],cloudAllowed=bool(row["cloud_allowed"]),
-                    expiresAt=row["expires_at"],revision=row["revision"],status=row["status"])
+                    expiresAt=row["expires_at"],revision=row["revision"],status=row["status"],
+                    supersededBy=row["superseded_by"])
 
     def add_manual(self, content: str, *, cloud_allowed: bool=False) -> dict:
         content=content.strip()
@@ -286,7 +300,8 @@ class MemoryEngine:
             rows=conn.execute("SELECT * FROM memory_candidates WHERE status='pending' "
                               "ORDER BY created_at DESC LIMIT 100").fetchall()
         return [dict(id=r["id"],content=r["content"],sourceMessageId=r["source_message_id"],
-                     conversationId=r["conversation_id"],createdAt=r["created_at"]) for r in rows]
+                     conversationId=r["conversation_id"],createdAt=r["created_at"],
+                     conflictWith=r["conflict_with"]) for r in rows]
 
     def review(self,candidate_id: str,approve: bool,cloud_allowed: bool=False) -> dict | None:
         with closing(db.connection(self.path)) as conn:
@@ -310,6 +325,21 @@ class MemoryEngine:
                     (item_id,row["content"],row["fingerprint"],row["source_message_id"],
                      row["conversation_id"],int(cloud_allowed),now(),now()))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,row["content"]))
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                             (str(uuid.uuid4()),item_id,1,"approved",row["content"],now()))
+                if row["conflict_with"]:
+                    previous=conn.execute("SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
+                                          (row["conflict_with"],)).fetchone()
+                    if previous:
+                        old_topic=preference_topic(previous["content"])
+                        new_topic=preference_topic(row["content"])
+                        if old_topic and new_topic and old_topic[0]==new_topic[0] and old_topic[1]!=new_topic[1]:
+                            conn.execute(
+                                "UPDATE memory_items SET status='superseded',cloud_allowed=0,"
+                                "superseded_by=?,updated_at=? WHERE id=?",
+                                (item_id,now(),previous["id"]))
+                            conn.execute("DELETE FROM memory_fts WHERE item_id=?",(previous["id"],))
+                            conn.execute("DELETE FROM memory_summaries")
                 conn.execute("UPDATE memory_candidates SET status='approved' WHERE id=?",(candidate_id,))
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         return dict(approved=True,item=self._item(item))
@@ -385,7 +415,7 @@ class MemoryEngine:
             if SECRET.search(text):
                 return
             explicit=EXPLICIT.match(text)
-            implicit=PREFERENCE.match(text)
+            implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
             candidate=(explicit or implicit)
             if not candidate:
                 return
@@ -401,12 +431,25 @@ class MemoryEngine:
             if conn.execute("SELECT 1 FROM memory_candidates WHERE fingerprint=? AND status='pending'",
                             (fingerprint,)).fetchone():
                 return
+            # Конфликт признаём только при явном совпадении темы и противоположной полярности.
+            new_topic=preference_topic(content)
+            conflict_with=None
+            if new_topic:
+                existing=conn.execute(
+                    "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                    "AND (conversation_id='global' OR conversation_id=?)",(conversation_id,)
+                ).fetchall()
+                for item in existing:
+                    old_topic=preference_topic(item["content"])
+                    if old_topic and old_topic[0]==new_topic[0] and old_topic[1]!=new_topic[1]:
+                        conflict_with=item["id"]
+                        break
             with conn:
                 conn.execute(
                     "INSERT OR IGNORE INTO memory_candidates "
-                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at) "
-                    "VALUES(?,?,?,?,?,'pending',?)",
-                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now()))
+                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with) "
+                    "VALUES(?,?,?,?,?,'pending',?,?)",
+                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with))
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
