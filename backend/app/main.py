@@ -1,6 +1,8 @@
 """Локальный FastAPI API: чат SQLite, память и Cloud.ru Foundation Models."""
 from pathlib import Path
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
+import os
+import sqlite3
 import logging
 import asyncio
 import json
@@ -66,11 +68,24 @@ class CloudSettingsInput(BaseModel):
 
 def create_app(db_path: Path | None = None) -> FastAPI:
     database = db_path if db_path is not None else db.default_database()
-    existed = database.exists()
+    existed = database.is_file()
+    if existed:
+        # Резервная копия ДО миграций, а не после изменения старой схемы.
+        backup = database.with_name(database.name + ".before-memory-core.bak")
+        if not backup.exists():
+            temporary = backup.with_name(backup.name + ".tmp")
+            try:
+                with closing(sqlite3.connect(database)) as source:
+                    with closing(sqlite3.connect(temporary)) as dest:
+                        source.backup(dest)
+                os.replace(temporary, backup)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
     db.initialise(database)
     history.initialise(database)
     engine = MemoryEngine(database)
-    engine.initialize(backup_existing=existed)
+    engine.initialize(backup_existing=False)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -94,7 +109,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.7.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.8.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -126,6 +141,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.exception_handler(cloud.CloudError)
     async def cloud_error_handler(_request: Request, error: cloud.CloudError):
         return JSONResponse({"detail": str(error)}, status_code=error.status)
+
+    @app.exception_handler(history.StaleConversation)
+    async def stale_chat_handler(_request: Request, error: history.StaleConversation):
+        return JSONResponse({"detail": str(error)}, status_code=409)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -161,6 +180,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not text:
             raise HTTPException(status_code=422, detail="Сообщение не может быть пустым")
         require_conversation(body.conversationId)
+        expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
         notes = memory_context(text, body.conversationId, settings["enabled"])
         if settings["enabled"]:
@@ -180,14 +200,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             previous = history.messages(database, body.conversationId, limit=12)
             try:
                 response = await cloud.generate_cloud_reply(settings["model"], previous, notes, text)
-                result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response)
+                result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response, expected_epoch)
                 return observed(result, body.conversationId)
             except Exception:
                 # Сохраняем резервирование: повтор с тем же ID не создаст второй платный вызов.
                 db.fail_request(database, body.requestId)
                 raise
         response = generate_reply(text, notes)
-        return observed(history.append_exchange(database, text, response, body.conversationId), body.conversationId)
+        return observed(history.append_exchange(database, text, response, body.conversationId, expected_epoch), body.conversationId)
 
     @app.delete("/api/chat/messages")
     def remove_messages(conversationId: str = Query(default="main", max_length=40)) -> dict:
@@ -202,6 +222,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not text:
             raise HTTPException(422, detail="Сообщение не может быть пустым.")
         require_conversation(body.conversationId)
+        expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
         if settings["enabled"] and not body.requestId:
             raise HTTPException(422, detail="Для Cloud.ru требуется идентификатор запроса.")
@@ -216,7 +237,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 if not settings["enabled"]:
                     result = observed(history.append_exchange(
                         database, text, generate_reply(text, memory_context(text, body.conversationId, False)),
-                        body.conversationId), body.conversationId)
+                        body.conversationId, expected_epoch), body.conversationId)
                     yield event("delta", {"text": result["assistant"]["text"]})
                     yield event("done", result)
                     return
@@ -240,7 +261,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                     yield event("delta", {"text": piece})
                 answer = "".join(tokens)
                 result = history.complete_cloud_exchange(
-                    database, body.requestId, body.conversationId, text, answer)
+                    database, body.requestId, body.conversationId, text, answer, expected_epoch)
                 completed = True
                 observed(result, body.conversationId)
                 yield event("done", result)
@@ -354,6 +375,19 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not changed:
             raise HTTPException(404,detail="Выписка не найдена.")
         return {"success": True}
+
+    @app.get("/api/memory/recall")
+    def preview_memory_recall(
+        q: str = Query(min_length=2, max_length=200),
+        conversationId: str = Query(default="main", max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.preview(q, conversationId, cloudMode)
+
+    @app.get("/api/memory/usage")
+    def memory_usage():
+        return {"entries": engine.usage()}
 
     @app.get("/api/memory/status")
     def memory_status():

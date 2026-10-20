@@ -8,6 +8,7 @@ export type MemoryFact = {
 };
 export type MemoryCandidate = {
   id: string; content: string; sourceMessageId: string; conversationId: string; createdAt: number;
+  conflictWith: string | null;
 };
 export type MemorySummary = {
   conversationId: string; content: string; status: string; cloudAllowed: boolean; updatedAt: number;
@@ -17,7 +18,12 @@ export type MemoryPolicy = {
   auto_extract: boolean; auto_summaries: boolean;
 };
 export type MemoryStatus = { facts: number; pending: number; jobs: number; summaries: number; policy: MemoryPolicy };
-export type MemoryExplanation = { item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean };
+export type MemoryExplanation = {
+  item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
+  revisions: { revision: number; action: string; content: string; createdAt: number }[];
+};
+export type MemoryRecallPreview = { memories: MemoryFact[]; context: string };
+export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode: boolean; selectedAt: number; content: string };
 export type ChatMatch = Message & { conversationId: string };
 export type Exchange = { user: Message; assistant: Message };
 
@@ -78,14 +84,29 @@ export async function addMemoryFact(content: string, cloudAllowed = false): Prom
   return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content, cloudAllowed }) }));
 }
 
-export async function updateMemoryFact(fact: MemoryFact, content: string, cloudAllowed: boolean): Promise<MemoryFact> {
+export async function updateMemoryFact(
+  fact: MemoryFact, content: string, cloudAllowed: boolean, expiresAt: number | null = fact.expiresAt,
+): Promise<MemoryFact> {
   return parse(await fetch('/api/memory/facts/' + encodeURIComponent(fact.id), {
-    method: 'PUT', headers, body: JSON.stringify({ content, cloudAllowed, revision: fact.revision, expiresAt: fact.expiresAt }),
+    method: 'PUT', headers, body: JSON.stringify({ content, cloudAllowed, revision: fact.revision, expiresAt }),
   }));
 }
 
 export async function explainMemoryFact(id: string): Promise<MemoryExplanation> {
   return parse(await fetch('/api/memory/facts/' + encodeURIComponent(id) + '/explain', { cache: 'no-store' }));
+}
+
+export async function previewMemoryRecall(
+  query: string, conversationId = 'main', cloudMode = true,
+): Promise<MemoryRecallPreview> {
+  const args = new URLSearchParams({ q: query, conversationId, cloudMode: String(cloudMode) });
+  return parse(await fetch('/api/memory/recall?' + args.toString(), { cache: 'no-store' }));
+}
+
+export async function getMemoryUsage(): Promise<MemoryUsage[]> {
+  return (await parse<{ entries: MemoryUsage[] }>(
+    await fetch('/api/memory/usage', { cache: 'no-store' }),
+  )).entries;
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {

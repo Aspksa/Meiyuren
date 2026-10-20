@@ -3,10 +3,11 @@ import {
   addMemoryFact, clearHistory, explainMemoryFact, getMemoryCandidates, getMemoryFacts,
   getMemoryPolicy, getMemoryStatus, getMemorySummaries, loadMemory, processMemoryJobs,
   removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
-  setMemoryPolicy, updateMemoryFact,
+  setMemoryPolicy, updateMemoryFact, previewMemoryRecall, getMemoryUsage,
 } from '../services/chatApi';
 import type {
-  MemoryCandidate, MemoryFact, MemoryPolicy, MemoryStatus, MemorySummary,
+  MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
+  MemoryStatus, MemorySummary, MemoryUsage,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
@@ -20,16 +21,21 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [factDraft, setFactDraft] = useState('');
   const [factCloud, setFactCloud] = useState(false);
+  const [explanation, setExplanation] = useState<MemoryExplanation | null>(null);
+  const [recallQuery, setRecallQuery] = useState('');
+  const [recallCloud, setRecallCloud] = useState(true);
+  const [recallResult, setRecallResult] = useState<MemoryRecallPreview | null>(null);
+  const [usage, setUsage] = useState<MemoryUsage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [n, f, c, s, p, state] = await Promise.all([
+    const [n, f, c, s, p, state, logs] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
-      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(),
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(),
     ]);
-    setNotes(n); setFacts(f); setCandidates(c); setSummaries(s); setPolicy(p); setStatus(state);
+    setNotes(n); setFacts(f); setCandidates(c); setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs);
   }
 
   useEffect(() => {
@@ -37,11 +43,11 @@ export function MemoryEditor({ active }: { active: boolean }) {
     let mounted = true;
     void Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
-      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(),
-    ]).then(([n, f, c, s, p, state]) => {
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(),
+    ]).then(([n, f, c, s, p, state, logs]) => {
       if (mounted) {
         setNotes(n); setFacts(f); setCandidates(c);
-        setSummaries(s); setPolicy(p); setStatus(state);
+        setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs);
       }
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
@@ -101,10 +107,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
   async function explain(fact: MemoryFact) {
     await action(async () => {
       const result = await explainMemoryFact(fact.id);
-      window.alert(result.source
-        ? 'Источник: ' + result.source.text
-        : 'Источник не указан или исходное сообщение удалено. Тип: ' + fact.kind);
-      return 'Информация об источнике открыта.';
+      setExplanation(result);
+      return 'Источник и ревизии показаны ниже.';
     });
   }
 
@@ -117,6 +121,9 @@ export function MemoryEditor({ active }: { active: boolean }) {
   }
 
   async function review(candidate: MemoryCandidate, approve: boolean) {
+    if (approve && candidate.conflictWith && !window.confirm(
+      'Обнаружено противоположное предпочтение. Подтверждение пометит прежнее воспоминание устаревшим. Продолжить?',
+    )) return;
     await action(async () => {
       await reviewMemoryCandidate(candidate.id, approve, false);
       return approve ? 'Кандидат подтверждён и сохранён только локально.' : 'Кандидат отклонён.';
@@ -127,6 +134,31 @@ export function MemoryEditor({ active }: { active: boolean }) {
     await action(async () => {
       await reviewMemorySummary(summary.conversationId, approve, false);
       return approve ? 'Выписка подтверждена. В облако не передаётся.' : 'Выписка отклонена.';
+    });
+  }
+
+  async function setExpiry(fact: MemoryFact) {
+    const current = fact.expiresAt ? new Date(fact.expiresAt).toISOString().slice(0, 10) : '';
+    const input = window.prompt('Срок актуальности YYYY-MM-DD (пусто — бессрочно)', current);
+    if (input === null) return;
+    const cleaned = input.trim();
+    const date = cleaned ? Date.parse(cleaned + 'T23:59:59Z') : null;
+    if (cleaned && (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned) || date === null || !Number.isFinite(date))) {
+      setError('Используй дату в формате YYYY-MM-DD.');
+      return;
+    }
+    await action(async () => {
+      await updateMemoryFact(fact, fact.content, fact.cloudAllowed, date);
+      return 'Срок актуальности изменён.';
+    });
+  }
+
+  async function runPreview() {
+    if (recallQuery.trim().length < 2) return;
+    await action(async () => {
+      const result = await previewMemoryRecall(recallQuery.trim(), 'main', recallCloud);
+      setRecallResult(result);
+      return 'Предпросмотр выполнен без платного запроса Cloud.ru.';
     });
   }
 
@@ -193,6 +225,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       <ul className="memory-core__list">
         {candidates.map(candidate => <li key={candidate.id}>
           <span>{candidate.content}</span>
+          {candidate.conflictWith && <small>⚠ Возможное противоречие с сохранённым фактом</small>}
           <div className="memory-core__actions">
             <button type="button" disabled={busy} onClick={() => void review(candidate, true)}>Запомнить</button>
             <button type="button" disabled={busy} onClick={() => void review(candidate, false)}>Отклонить</button>
@@ -210,9 +243,47 @@ export function MemoryEditor({ active }: { active: boolean }) {
           <div className="memory-core__actions">
             <button type="button" disabled={busy} onClick={() => void explain(fact)}>Почему?</button>
             <button type="button" disabled={busy} onClick={() => void editFact(fact)}>Изменить</button>
+            <button type="button" disabled={busy} onClick={() => void setExpiry(fact)}>Срок</button>
             <button type="button" disabled={busy} onClick={() => void toggleFactCloud(fact)}>{fact.cloudAllowed ? 'Запретить Cloud' : 'Разрешить Cloud'}</button>
             <button type="button" disabled={busy} onClick={() => void forget(fact)}>Забыть</button>
           </div>
+        </li>)}
+      </ul>
+
+      {explanation && <section className="memory-core__explanation" aria-label="Происхождение воспоминания">
+        <h4>Почему Мэйюрэн это помнит?</h4>
+        <p>{explanation.item.content}</p>
+        <small>Источник: {explanation.source?.text ?? 'Удалён или неизвестен'}</small>
+        <h4>История правок</h4>
+        <ul className="memory-core__list">
+          {explanation.revisions.map(entry => <li key={entry.revision}>
+            Версия {entry.revision} · {entry.action}: {entry.content}
+          </li>)}
+        </ul>
+        <button type="button" onClick={() => setExplanation(null)}>Закрыть</button>
+      </section>}
+
+      <h4>Какую память Мэйюрэн использует?</h4>
+      <p>Предпросмотр выбора фактов. Он ничего не отправляет в Cloud.ru.</p>
+      <input aria-label="Проверочный вопрос памяти" maxLength={200}
+        placeholder="Например: какие игры я люблю?" value={recallQuery}
+        onChange={event => setRecallQuery(event.target.value)} />
+      <label className="memory-core__toggle">
+        <input type="checkbox" checked={recallCloud} onChange={e => setRecallCloud(e.target.checked)} />
+        <span>Проверить правила передачи в Cloud.ru</span>
+      </label>
+      <button type="button" disabled={busy || recallQuery.trim().length < 2}
+        onClick={() => void runPreview()}>Предпросмотр памяти</button>
+      {recallResult && <div className="memory-core__explanation">
+        <strong>Найдено воспоминаний: {recallResult.memories.length}</strong>
+        <pre>{recallResult.context || 'Разрешённого контекста для этого вопроса нет.'}</pre>
+      </div>}
+      <h4>Журнал выбора памяти ({usage.length})</h4>
+      <p>Показывает локальный выбор фактов при подготовке контекста, не подтверждает получение ответа Cloud.ru.</p>
+      <ul className="memory-core__list">
+        {usage.slice(0, 10).map((entry, i) => <li key={entry.memoryId + ':' + entry.selectedAt + ':' + i}>
+          {new Date(entry.selectedAt).toLocaleString('ru-RU')} ·
+          {entry.cloudMode ? ' Cloud.ru' : ' локально'} · {entry.content}
         </li>)}
       </ul>
 
