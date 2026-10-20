@@ -23,6 +23,32 @@ SECRET = re.compile(
     r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b|"
     r"[\w.+-]+@[\w.-]+\.[a-z]{2,})"
 )
+RUSSIAN_SUFFIXES = tuple(sorted((
+    "иями", "ями", "ами", "иях", "ого", "ему", "ими", "иях",
+    "иях", "иях", "иям", "ием", "иях", "ость", "ости", "ыми",
+    "иях", "иях", "ыми", "ими", "ает", "яют", "ать", "ить",
+    "иях", "ах", "ях", "ов", "ев", "ей", "ой", "ий", "ый",
+    "ая", "ое", "ые", "ие", "ии", "ам", "ям", "ом", "ем",
+    "у", "ю", "а", "я", "ы", "и", "е", "о",
+), key=len, reverse=True))
+STOPWORDS = frozenset(("мне","что","это","как","или","для","мой","моя","мои","когда",
+                      "где","наш","ваш","могу","можно","есть","еще","ещё","хочу",
+                      "тебе","меня","будет","было","были","кто","про"))
+
+
+def search_stem(token: str) -> str:
+    if not re.search(r"[а-яё]", token):
+        return token
+    for suffix in RUSSIAN_SUFFIXES:
+        if token.endswith(suffix) and len(token)-len(suffix)>=4:
+            return token[:-len(suffix)]
+    return token
+
+
+NEGATIVE_PREFERENCE = re.compile(
+    r"(?is)^\s*(?:я\s+(?:больше\s+)?не\s+люблю|"
+    r"мне\s+(?:больше\s+)?не\s+нрав(?:ится|ятся))\s+(.{3,250})\s*$"
+)
 EXPLICIT = re.compile(r"(?is)^\s*(?:пожалуйста[, ]+)?запомни[, :]+(?:что\s+)?(.{4,400})\s*$")
 PREFERENCE = re.compile(
     r"(?is)^\s*(?:я\s+(?:люблю|предпочитаю)\b|мне\s+нрав(?:ится|ятся)\b)\s+(.{3,350})\s*$"
@@ -79,6 +105,21 @@ class MemoryEngine:
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_tombstones (
                     fingerprint TEXT PRIMARY KEY, created_at INTEGER NOT NULL
                 )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_excluded_sources (
+                    source_message_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_revisions (
+                    id TEXT PRIMARY KEY, memory_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL, action TEXT NOT NULL,
+                    content TEXT NOT NULL, created_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_recall_log (
+                    id TEXT PRIMARY KEY, memory_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL, cloud_mode INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_memory ON memory_recall_log(memory_id)")
+
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_policy (
                     id INTEGER PRIMARY KEY CHECK(id=1), allow_cloud_notes INTEGER NOT NULL DEFAULT 0,
                     allow_cloud_facts INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +143,10 @@ class MemoryEngine:
                 )""")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_status ON memory_items(status,updated_at)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_jobs_state ON memory_jobs(state,lease_until)")
+                columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_candidates)")}
+                if "conflict_with" not in columns:
+                    conn.execute("ALTER TABLE memory_candidates ADD COLUMN conflict_with TEXT")
+
                 # FTS5 — только локальный индекс. Данные удаляются вместе с фактом.
                 conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(item_id UNINDEXED, content, tokenize='unicode61')")
                 legacy = conn.execute("SELECT id,content,created_at FROM memory_facts").fetchall()
@@ -162,6 +207,9 @@ class MemoryEngine:
             with conn:
                 conn.execute("DELETE FROM memory_tombstones WHERE fingerprint=?", (digest(content),))
                 conn.execute(
+                    "INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                    (str(uuid.uuid4()),item_id,1,"created",content,ts))
+                conn.execute(
                     "INSERT INTO memory_items(id,content,fingerprint,kind,status,cloud_allowed,created_at,updated_at) "
                     "VALUES(?,?,?,'manual','confirmed',?,?,?)",
                     (item_id,content,digest(content),int(cloud_allowed),ts,ts))
@@ -184,6 +232,8 @@ class MemoryEngine:
                 if digest(old["content"]) != digest(content):
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (old["fingerprint"],now()))
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                             (str(uuid.uuid4()),item_id,revision+1,"edited",content,now()))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
@@ -204,6 +254,11 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_items WHERE id=?",(item_id,))
                 # В предыдущих версиях копия ручного факта оставалась в memory_facts.
                 conn.execute("DELETE FROM memory_facts WHERE id=?",(item_id,))
+                conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(item_id,))
+                conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(item_id,))
+                if old["source_message_id"]:
+                    conn.execute("INSERT OR IGNORE INTO memory_excluded_sources VALUES(?,?)",
+                                 (old["source_message_id"],now()))
                 conn.execute("DELETE FROM memory_candidates WHERE fingerprint=?",(old["fingerprint"],))
                 # Не оставляем производные сводки с потенциально удалённой информацией.
                 if old["conversation_id"]!="global":
