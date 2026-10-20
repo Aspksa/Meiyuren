@@ -113,8 +113,16 @@ export async function applyUpdate(root, expectedSha) {
     } catch {
       throw new Error('Истории Git разошлись. Автоматическое объединение запрещено.');
     }
-    await git(root, 'merge', '--ff-only', fetchedSha);
+    // Сохраняем точку отката ДО замены файлов: при сбое записи обновление не начнётся.
     await storeRecord(root, local.sha, fetchedSha);
+    try {
+      await git(root, 'merge', '--ff-only', fetchedSha);
+    } catch (error) {
+      // Если Git не обновил HEAD, удаляем неактуальную запись.
+      const current = await git(root, 'rev-parse', 'HEAD').catch(() => '');
+      if (current === local.sha) await rm(recordFile(root), { force: true });
+      throw error;
+    }
     return {
       success: true,
       message: 'Файлы обновлены после успешных проверок GitHub CI. Перезапустите Meiyuren.cmd; если изменились зависимости, выполните npm install.',
