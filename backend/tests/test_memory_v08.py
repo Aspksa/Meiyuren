@@ -150,3 +150,41 @@ def test_backup_precedes_memory_migration(tmp_path):
         assert conn.execute("SELECT name FROM sqlite_master WHERE name='memory_items'").fetchone() is None
         old=conn.execute("SELECT content FROM memory_facts").fetchall()
         assert [row["content"] for row in old]==["Люблю код"]
+
+
+
+def test_forgetting_current_preference_cascades_to_superseded_versions(client, tmp_path):
+    say(client, "Я люблю кофе")
+    first=review_candidate(client)
+    client.post("/api/memory/candidates/"+first["id"]+"/review",json={"approve":True})
+    say(client, "Я больше не люблю кофе")
+    next_candidate=review_candidate(client)
+    client.post("/api/memory/candidates/"+next_candidate["id"]+"/review",json={"approve":True})
+    current=client.get("/api/memory/facts").json()["facts"][0]
+    assert client.delete("/api/memory/facts/"+current["id"]).status_code==200
+    with closing(db.connection(tmp_path/"memory-v08.sqlite3")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]==0
+        assert conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]==0
+        assert conn.execute("SELECT COUNT(*) FROM memory_revisions").fetchone()[0]==0
+    assert client.get("/api/memory/facts").json()["facts"]==[]
+
+
+def test_migration_drops_untrusted_raw_v07_summaries(tmp_path):
+    path=tmp_path/"from-v07.sqlite3"
+    db.initialise(path)
+    history.initialise(path)
+    engine=MemoryEngine(path)
+    engine.initialize()
+    with closing(db.connection(path)) as conn:
+        with conn:
+            conn.execute("DELETE FROM memory_revisions")
+            conn.execute("DROP TABLE memory_revisions")
+            conn.execute(
+                "INSERT INTO memory_summaries(conversation_id,content,source_message_id,"
+                "status,cloud_allowed,updated_at) VALUES(?,?,?,?,?,?)",
+                ("main","Старая копия сырых сообщений","legacy-id","approved",1,123)
+            )
+    with TestClient(create_app(path)) as app:
+        assert app.get("/api/memory/summaries").json()["summaries"]==[]
+    with closing(db.connection(path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_summaries").fetchone()[0]==0
