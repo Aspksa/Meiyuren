@@ -33,7 +33,7 @@ def test_conversations_and_search(client):
     assert len(client.get("/api/chat/messages").json()["messages"]) == 2
     matches = client.get("/api/chat/search?q=Остров").json()["matches"]
     assert len(matches) == 1 and matches[0]["conversationId"] == new["id"]
-    assert client.get("/api/chat/search?q=%25").json()["matches"] == []
+    assert client.get("/api/chat/search?q=%25%25").json()["matches"] == []
     assert client.delete("/api/conversations/main").status_code == 409
     assert client.delete("/api/conversations/" + new["id"]).status_code == 200
     assert client.get("/api/chat/messages?conversationId=" + new["id"]).status_code == 404
