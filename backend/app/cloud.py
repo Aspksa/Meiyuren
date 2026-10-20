@@ -133,7 +133,9 @@ async def available_models() -> list[str]:
         })[:300]
     except CloudError:
         raise
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
+    except (ValueError, TypeError):
+        raise CloudError("Cloud.ru вернул некорректный ответ со списком моделей.", 502) from None
+    except httpx.HTTPError as exc:
         raise request_error(exc) from None
 
 
@@ -173,5 +175,7 @@ async def generate_cloud_reply(model: str, history: list[dict], notes: str, user
         return result
     except CloudError:
         raise
-    except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as exc:
+    except (ValueError, TypeError, KeyError, IndexError):
+        raise CloudError("Cloud.ru вернул неожиданный формат ответа. Возможно, модель не поддерживает обычный текстовый чат.", 502) from None
+    except httpx.HTTPError as exc:
         raise request_error(exc) from None
