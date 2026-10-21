@@ -18,6 +18,7 @@ import type {
   CortexProvenance,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
+import { BrainMap } from './BrainMap';
 import { EntityPanel } from './EntityPanel';
 
 const BRAIN_NAMES: Record<MemoryBrain, string> = {
@@ -433,6 +434,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
         })}>Переиндексировать глубокую память</button>
       </section>}
 
+      <BrainMap active={active} version={entityVersion} names={BRAIN_NAMES} onChange={() => void refresh()} />
+
       {tree && <section className="memory-core__tree" aria-label="Дерево саморазвивающейся памяти">
         <h4>Саморазвивающиеся направления памяти</h4>
         <p>Восемь корней и автоматически созданные вложенные темы.
@@ -451,6 +454,18 @@ export function MemoryEditor({ active }: { active: boolean }) {
             <strong>{BRAIN_NAMES[brain]}</strong>
             <small> · {root?.support ?? 0} воспоминаний · {nested.length} ветвей</small>
             {nested.map(node => <div key={node.id} className="memory-core__tree-node"
+              style={{ paddingLeft: Math.min(node.depth, 4) * 14 }}>
+              <span>↳ {node.title}</span><small>{node.support}</small>
+            </div>)}
+          </div>;
+        })}
+        {(tree.custom ?? []).map(custom => {
+          const nodes = tree.branches.filter(node => node.brain === custom.id);
+          const root = nodes.find(node => node.id === custom.id);
+          return <div key={custom.id} className="memory-core__tree-brain">
+            <strong>{custom.title}</strong>
+            <small> · свой мозг · {root?.support ?? 0} воспоминаний · {nodes.length - 1} ветвей</small>
+            {nodes.filter(node => node.depth > 0).map(node => <div key={node.id} className="memory-core__tree-node"
               style={{ paddingLeft: Math.min(node.depth, 4) * 14 }}>
               <span>↳ {node.title}</span><small>{node.support}</small>
             </div>)}
@@ -477,6 +492,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         ['auto_growth', 'Самостоятельно запоминать безопасные факты и выращивать ветви'],
         ['auto_evolution', 'Автоматически развивать специализации и проверять стратегии локально'],
         ['semantic_model', 'Модель смысла: один раз скачать (около 220 МБ) и искать по смыслу, всё локально'],
+        ['curiosity', 'Любопытство: иногда уточнять пробелы в знаниях (не чаще раза в 6 часов)'],
         ['auto_summaries', 'Автоматически создавать выписки (локально)'],
         ['allow_cloud_embeddings', 'Разрешить ручную нейроиндексацию через Cloud.ru (может быть платной)'],
       ] as const).map(([key, caption]) =>

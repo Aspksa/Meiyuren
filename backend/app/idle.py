@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from . import db, semantic
+from .brain_growth import BrainGrowth
 from .memory_engine import (
     AUTO_PRIVATE, SECRET, TOKENS, MemoryEngine, _keywords, canonical, now, preference_topic,
     drop_backups, local_vector,
@@ -36,6 +37,7 @@ class IdleRuntime:
     def __init__(self, path: Path, engine: MemoryEngine):
         self.path = path
         self.engine = engine
+        self.growth = BrainGrowth(path, engine)
         self._lock = threading.Lock()
         self._last_activity = now()
 
@@ -127,6 +129,8 @@ class IdleRuntime:
             ("unfinished", self.unfinished),
             ("vectors", self.vectorize),
             ("meaning", self.meaning),
+            ("growth", self.grow),
+            ("curiosity", self.curiosity),
             ("health", self.health),
         )
         report: dict = {}
@@ -288,6 +292,18 @@ class IdleRuntime:
             return {"state": "ready", **self.engine.semantic_index(model)}
         except Exception as exc:  # сторонняя ONNX-модель не должна сорвать бэкап и проверку базы
             return {"state": "failed", "error": type(exc).__name__}
+
+    # -- 5c. growth of mini brains (v0.31) --------------------------------
+    def grow(self) -> dict:
+        """Ветки по словам и смыслу, бесконечный рост и предложения новых мозгов."""
+        if not self.engine.policy()["auto_growth"]:
+            return {"state": "off"}
+        return self.growth.grow()
+
+    def curiosity(self) -> dict:
+        if not self.engine.policy()["curiosity"]:
+            return {"state": "off"}
+        return self.growth.scan_questions()
 
     # -- 6. health ---------------------------------------------------------
     def health(self) -> dict:

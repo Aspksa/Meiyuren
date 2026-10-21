@@ -2,9 +2,9 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { avatarUrl } from '../lib/avatars';
 import {
   createConversation, deleteConversation, describeIdleReport, getConversations, getEngineMode, getIdleBriefing,
-  loadHistory, loadOlderHistory, markIdleBriefingSeen, rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
+  dismissCuriosity, loadHistory, loadOlderHistory, markIdleBriefingSeen, rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
 } from '../services/chatApi';
-import type { Conversation, ChatMatch, Exchange, IdleBriefing, RecallTrace } from '../services/chatApi';
+import type { Conversation, ChatMatch, Curiosity, Exchange, IdleBriefing, RecallTrace } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
 const BRAIN_LABELS: Record<string, string> = {
@@ -34,6 +34,7 @@ export function ChatPanel() {
   const [focusId, setFocusId] = useState<string | null>(null);
   // Воспоминания, использованные в ответах этой сессии: assistant message id → след.
   const [traces, setTraces] = useState<Record<string, RecallTrace>>({});
+  const [questions, setQuestions] = useState<Record<string, Curiosity>>({});
   const [rated, setRated] = useState<Record<string, boolean>>({});
   const [briefing, setBriefing] = useState<IdleBriefing | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -159,6 +160,23 @@ export function ChatPanel() {
     if (exchange.memory) {
       const trace = exchange.memory;
       setTraces(value => ({ ...value, [exchange.assistant.id]: trace }));
+    }
+    if (exchange.curiosity) {
+      const question = exchange.curiosity;
+      setQuestions(value => ({ ...value, [exchange.assistant.id]: question }));
+    }
+  }
+
+  async function dismiss(messageId: string, question: Curiosity) {
+    try {
+      await dismissCuriosity(question.id);
+      setQuestions(value => {
+        const next = { ...value };
+        delete next[messageId];
+        return next;
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось убрать вопрос');
     }
   }
 
@@ -289,6 +307,7 @@ export function ChatPanel() {
         </div>}
         {!loading && messages.map(item => {
           const trace = item.role === 'assistant' ? traces[item.id] : undefined;
+          const question = item.role === 'assistant' ? questions[item.id] : undefined;
           return <div className={`message message--${item.role}${focusId === item.id ? ' message--focus' : ''}`}
             key={item.id} data-message-id={item.id}>
             <div className="message__text">{item.text}</div>
@@ -308,6 +327,10 @@ export function ChatPanel() {
                 })}
               </ul>
             </details>}
+            {question && <div className="message__curiosity">
+              <span>🤔 {question.question}</span>
+              <button type="button" onClick={() => void dismiss(item.id, question)}>Не спрашивать об этом</button>
+            </div>}
             <span className="message__time">{new Date(item.sentAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
           </div>;
         })}

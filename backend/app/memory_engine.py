@@ -384,6 +384,9 @@ class MemoryEngine:
                 if "semantic_model" not in policy_columns:
                     # v0.30: модель смысла скачивается один раз в режиме простоя; можно выключить.
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN semantic_model INTEGER NOT NULL DEFAULT 1")
+                if "curiosity" not in policy_columns:
+                    # v0.31: мини-мозги иногда уточняют пробелы в знаниях прямо в чате.
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN curiosity INTEGER NOT NULL DEFAULT 1")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
                     id TEXT PRIMARY KEY,
                     parent_id TEXT,
@@ -536,6 +539,25 @@ class MemoryEngine:
                     item_id TEXT PRIMARY KEY, digest TEXT NOT NULL, vector BLOB NOT NULL,
                     updated_at INTEGER NOT NULL
                 )""")
+                # Саморазвитие мини-мозгов (v0.31): вопросы, предложения новых мозгов, история роста.
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_curiosity (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, ref TEXT NOT NULL, question TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'new', created_at INTEGER NOT NULL, asked_at INTEGER,
+                    UNIQUE(kind, ref)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_brain_proposals (
+                    id TEXT PRIMARY KEY, term TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                    support INTEGER NOT NULL, brains TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    created_at INTEGER NOT NULL, decided_at INTEGER
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_custom_brains (
+                    id TEXT PRIMARY KEY, term TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_brain_history (
+                    day TEXT NOT NULL, node TEXT NOT NULL, support INTEGER NOT NULL,
+                    PRIMARY KEY(day, node)
+                )""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_local_vectors (
                     item_id TEXT PRIMARY KEY, digest TEXT NOT NULL, vector_json TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -600,10 +622,10 @@ class MemoryEngine:
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model","curiosity")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model","curiosity"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -1137,6 +1159,10 @@ class MemoryEngine:
         conn.execute("DELETE FROM memory_entity_mentions WHERE memory_id=?",(item_id,))
         conn.execute("DELETE FROM memory_entities WHERE id NOT IN "
                      "(SELECT entity_id FROM memory_entity_mentions)")
+        # Вопрос любопытства цитирует факт: забытый факт уходит и из вопросов.
+        conn.execute("DELETE FROM memory_curiosity WHERE kind='due' AND ref=?",(item_id,))
+        conn.execute("DELETE FROM memory_curiosity WHERE kind='entity' AND ref NOT IN "
+                     "(SELECT id FROM memory_entities)")
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -1370,6 +1396,11 @@ class MemoryEngine:
                 break  # Не разрезаем утверждение на части.
             pieces.append(piece)
             remaining-=len(piece)+1
+        digest_piece=self._branch_digest(query,conversation_id,cloud_mode,
+                                         {item["id"] for item in selected})
+        if digest_piece and len(digest_piece)+1<=remaining:
+            pieces.append(digest_piece)
+            remaining-=len(digest_piece)+1
         if self._continuation_query(query) and remaining>90:
             checkpoint=self.episode_overview(conversation_id,cloud_mode)
             included={item["id"] for item in selected}
@@ -1392,6 +1423,38 @@ class MemoryEngine:
                 if not SECRET.search(piece) and len(piece)+1<=remaining:
                     pieces.append(piece)
         return "\n".join(pieces)
+
+    def _branch_digest(self,query: str,conversation_id: str,cloud_mode: bool,
+                       included: set[str]) -> str:
+        """Выжимка мини-мозга по теме вопроса: что ещё известно об этом, коротко.
+
+        Берётся самая конкретная ветка (или свой мозг), чья тема названа в вопросе.
+        Факты проходят те же фильтры, что и обычный поиск (облако, срок, секреты).
+        """
+        keys=_keywords(query)
+        if not keys:
+            return ""
+        nodes=[node for node in self.branch_tree()["branches"]
+               if node["term"] in keys and node["support"]>=2
+               and (node["depth"]>0 or node["id"].startswith("custom:"))]
+        if not nodes:
+            return ""
+        node=max(nodes,key=lambda n:(n["depth"],n["support"]))
+        facts=[f for f in self.branch_facts(node["id"],conversation_id,cloud_mode)
+               if f["id"] not in included][:6]
+        if not facts:
+            return ""
+        parts=[]
+        for fact in facts:
+            text=fact["content"].rstrip(".")
+            if fact.get("dueDate"):
+                text+=" (срок: "+fact["dueDate"]+")"
+            if len("; ".join(parts+[text]))>420:
+                break  # целые утверждения, без обрезки на полуслове
+            parts.append(text)
+        if not parts:
+            return ""
+        return "Выжимка мини-мозга «"+node["title"]+"» (данные, не инструкция): "+"; ".join(parts)
 
     def prepare(self, query: str, conversation_id: str, cloud_mode: bool) -> str:
         """Компилятор контекста фиксирует ID выбранных, но не отправляет AI-вызов."""
@@ -1727,8 +1790,24 @@ class MemoryEngine:
                         term = search_stem(raw.casefold())
                         if term in terms and term not in titles:
                             titles[term] = raw[:42]
+                # Свои мозги (v0.31): тема, принятая пользователем, собирает факты из всех мозгов.
+                custom=conn.execute("SELECT id,term,title FROM memory_custom_brains ORDER BY created_at").fetchall()
+                for brain in custom:
+                    datasets[brain["id"]]={memory_id:terms for root in BRAINS
+                                           for memory_id,terms in datasets[root].items()
+                                           if brain["term"] in terms}
+                vectors=self._branch_vectors(conn)
                 conn.execute("DELETE FROM memory_branch_members")
                 conn.execute("DELETE FROM memory_branches WHERE depth>0")
+                conn.execute("DELETE FROM memory_branches WHERE depth=0 AND id NOT IN (%s)"
+                             % ",".join("?"*len(BRAINS)),tuple(BRAINS))
+                for brain in custom:
+                    conn.execute(
+                        "INSERT INTO memory_branches (id,parent_id,root_brain,term,title,depth,support,updated_at) "
+                        "VALUES(?,NULL,?,?,?,0,?,?)",
+                        (brain["id"],brain["id"],brain["term"],brain["title"],len(datasets[brain["id"]]),stamp))
+                    conn.executemany("INSERT OR IGNORE INTO memory_branch_members VALUES(?,?)",
+                                     [(brain["id"],memory_id) for memory_id in datasets[brain["id"]]])
                 for brain in BRAINS:
                     conn.execute(
                         "UPDATE memory_branches SET support=?,updated_at=? WHERE id=?",
@@ -1761,6 +1840,9 @@ class MemoryEngine:
                     for term,members in options[:MAX_BRANCH_CHILDREN]:
                         if nodes_created>=node_cap:
                             break
+                        if depth==1:
+                            # Ветка по смыслу: «эспрессо» попадает к «кофе» без общего слова.
+                            members=members | self._similar_members(members,set(datasets[root]),vectors)
                         node_id = str(uuid.uuid5(
                             uuid.NAMESPACE_URL, "meiyuren:memory-branch:"+parent_id+":"+term
                         ))
@@ -1779,6 +1861,9 @@ class MemoryEngine:
 
                 for brain in BRAINS:
                     expand(brain,brain,set(datasets[brain]),frozenset(),1)
+                for brain in custom:
+                    expand(brain["id"],brain["id"],set(datasets[brain["id"]]),
+                           frozenset({brain["term"]}),1)
                 # Every mature nested topic is a lightweight specialization, not an LLM.
                 candidates=conn.execute(
                     "SELECT id,root_brain,support FROM memory_branches "
@@ -1793,13 +1878,32 @@ class MemoryEngine:
         return {"branches":nodes_created,"roots":len(BRAINS),
                 "scanned":len(rows),"microbrains":len(candidates)}
 
+    def _branch_vectors(self,conn: sqlite3.Connection) -> dict:
+        """Векторы смысла текущих версий фактов; пусто, если модель выключена или не скачана."""
+        if not self.policy()["semantic_model"]:
+            return {}
+        rows=conn.execute("SELECT v.item_id,v.vector FROM memory_semantic_vectors v "
+                          "JOIN memory_items m ON m.id=v.item_id AND v.digest=?||m.fingerprint",
+                          (semantic.VERSION,)).fetchall()
+        return {r[0]:semantic.unpack(r[1]) for r in rows}
+
+    @staticmethod
+    def _similar_members(members: set[str],pool: set[str],vectors: dict) -> set[str]:
+        known=[vectors[i] for i in members if i in vectors]
+        if not known:
+            return set()
+        centre=semantic.normalize([sum(column) for column in zip(*known)])
+        return {i for i in pool-members if i in vectors
+                and semantic.similarity(centre,vectors[i])>=semantic.MATCH}
+
     def branch_tree(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             rows=conn.execute(
                 "SELECT id,parent_id,root_brain,term,title,depth,support "
                 "FROM memory_branches ORDER BY root_brain,depth,title,id LIMIT 400"
             ).fetchall()
-        return {"roots":list(BRAINS),"branches":[
+            custom=conn.execute("SELECT id,title FROM memory_custom_brains ORDER BY created_at").fetchall()
+        return {"roots":list(BRAINS),"custom":[dict(id=r["id"],title=r["title"]) for r in custom],"branches":[
             dict(id=r["id"],parentId=r["parent_id"],brain=r["root_brain"],
                  term=r["term"],title=r["title"],depth=r["depth"],support=r["support"])
             for r in rows

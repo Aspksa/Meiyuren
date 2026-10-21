@@ -12,7 +12,7 @@ export type MemoryBranch = {
   id: string; parentId: string | null; brain: MemoryBrain; term: string;
   title: string; depth: number; support: number;
 };
-export type MemoryTree = { roots: MemoryBrain[]; branches: MemoryBranch[] };
+export type MemoryTree = { roots: MemoryBrain[]; custom?: { id: string; title: string }[]; branches: MemoryBranch[] };
 export type MemoryConnection = { item: MemoryFact; relation: 'shared_topic' | 'neural_similarity'; weight: number };
 export type MemoryNeuralMatch = { item: MemoryFact; similarity: number };
 export type MemoryFact = {
@@ -31,6 +31,7 @@ export type MemoryPolicy = {
   allow_cloud_notes: boolean; allow_cloud_facts: boolean;
   auto_extract: boolean; auto_summaries: boolean; allow_cloud_embeddings: boolean;
   auto_growth: boolean; auto_evolution: boolean; semantic_model?: boolean;
+  curiosity?: boolean;
 };
 export type MemoryEvolution = {
   generation: number; strategy: string; evaluations: number; lastEvaluated: number;
@@ -90,7 +91,10 @@ export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode:
 export type ChatMatch = Message & { conversationId: string };
 export type RecallMemory = { id: string; content: string; brain: MemoryBrain };
 export type RecallTrace = { traceId: string; items: RecallMemory[] };
-export type Exchange = { user: Message; assistant: Message; memory?: RecallTrace; interrupted?: boolean };
+export type Curiosity = { id: string; question: string };
+export type Exchange = {
+  user: Message; assistant: Message; memory?: RecallTrace; curiosity?: Curiosity; interrupted?: boolean;
+};
 
 /** Ошибка потока с режимом: в демо-режиме нет платных повторов и предупреждений об оплате. */
 export class StreamError extends Error {
@@ -476,4 +480,31 @@ export async function getMemoryEntity(id: string): Promise<MemoryEntityDetail> {
 
 export async function getSemanticStatus(): Promise<SemanticStatus> {
   return parse(await fetch('/api/memory/semantic', { cache: 'no-store' }));
+}
+
+export type BrainBranchState = { id: string; title: string; support: number; depth: number; strength: number };
+export type BrainMapRoot = {
+  id: string; title: string | null; custom: boolean; facts: number; growth: number;
+  branches: number; newBranches: number; strong: BrainBranchState[]; sleeping: BrainBranchState[];
+};
+export type BrainProposal = { id: string; title: string; term: string; support: number; brains: MemoryBrain[] };
+export type BrainMap = { roots: BrainMapRoot[]; proposals: BrainProposal[] };
+
+/** Карта мозгов: рост за неделю, сильные и засыпающие ветки, предложения новых мозгов. */
+export async function getBrainMap(): Promise<BrainMap> {
+  return parse(await fetch('/api/memory/brains/map', { cache: 'no-store' }));
+}
+
+export async function decideBrainProposal(id: string, accept: boolean): Promise<{ accepted: boolean; title: string }> {
+  return parse(await fetch('/api/memory/brains/proposals/' + encodeURIComponent(id),
+    { method: 'POST', headers, body: JSON.stringify({ accept }) }));
+}
+
+export async function removeCustomBrain(id: string): Promise<void> {
+  await parse(await fetch('/api/memory/brains/custom/' + encodeURIComponent(id), { method: 'DELETE', headers }));
+}
+
+/** «Не спрашивать об этом»: вопрос любопытства больше не появится. */
+export async function dismissCuriosity(id: string): Promise<void> {
+  await parse(await fetch('/api/memory/curiosity/' + encodeURIComponent(id) + '/dismiss', { method: 'POST', headers }));
 }
