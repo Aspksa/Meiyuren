@@ -1338,7 +1338,7 @@ class MemoryEngine:
                 ).fetchall()
                 conn.execute("DELETE FROM memory_microbrains")
                 conn.executemany(
-                    "INSERT INTO memory_microbrains VALUES(?,?,?,?,?)",
+                    "INSERT INTO memory_microbrains VALUES(?,?,?,?,?,?)",
                     [(r["id"],r["root_brain"],r["id"],r["support"],stamp,stamp)
                      for r in candidates]
                 )
