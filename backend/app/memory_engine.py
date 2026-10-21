@@ -2195,9 +2195,53 @@ class MemoryEngine:
                 frontier=next_frontier
                 if not frontier:
                     break
-        # Не вытесняем сильные тематические совпадения слабыми ассоциациями.
-        selections=seeds[:min(len(seeds),cap)]
+        # Cortex Mesh joins independent brain memories only through >=2
+        # shared terms and live evidence. Reserve at most 2 result slots;
+        # FTS/lexical matches always keep the remaining slots.
+        bridge_options=[]
+        if cap>=2:
+            with closing(db.connection(self.path)) as conn:
+                for seed in seeds[:4]:
+                    edges=conn.execute(
+                        "SELECT CASE WHEN c.left_id=? THEN c.right_id ELSE c.left_id END AS neighbor,"
+                        "c.shared_terms,c.strength,COALESCE(w.adjustment,0) AS adjustment "
+                        "FROM memory_cortex_edges c LEFT JOIN memory_synaptic_weights w "
+                        "ON w.left_id=c.left_id AND w.right_id=c.right_id "
+                        "WHERE c.left_id=? OR c.right_id=? "
+                        "ORDER BY c.strength DESC LIMIT 8",
+                        (seed["id"],seed["id"],seed["id"])
+                    ).fetchall()
+                    for edge in edges:
+                        neighbor=by_id.get(edge["neighbor"])
+                        if (not neighbor or neighbor["brain"]==seed["brain"]
+                                or edge["shared_terms"]<2):
+                            continue
+                        overlap=len(tokens & _keywords(neighbor["content"]))
+                        # Cross-brain relevance is grounded by the linked seed.
+                        value=overlap*2+float(edge["strength"])+float(edge["adjustment"])
+                        bridge_options.append((value,neighbor["updatedAt"],neighbor))
+        bridge_options.sort(key=lambda x:(-x[0],-x[1],x[2]["id"]))
+        bridges=[]
+        bridge_seen={seed["id"] for seed in seeds[:max(cap-2,1)]}
+        for _,_,item in bridge_options:
+            if len(bridges)>=min(2,cap-1):
+                break
+            if item["id"] not in bridge_seen:
+                bridges.append(item)
+                bridge_seen.add(item["id"])
+        keep=max(1,cap-len(bridges))
+        selections=seeds[:keep]
         seen={x["id"] for x in selections}
+        for item in bridges:
+            if item["id"] not in seen and len(selections)<cap:
+                selections.append(item)
+                seen.add(item["id"])
+        for item in seeds[keep:]:
+            if len(selections)>=cap:
+                break
+            if item["id"] not in seen:
+                selections.append(item)
+                seen.add(item["id"])
         for _,_,item in sorted(candidates,key=lambda x:(-x[0],-x[1])):
             if len(selections)>=cap:
                 break
@@ -2249,8 +2293,12 @@ class MemoryEngine:
                 # Only explicit user feedback adjusts synapses. Automatically selected
                 # memories are NOT assumed correct merely because they were retrieved.
                 edges=conn.execute(
+                    "SELECT left_id,right_id FROM ("
                     "SELECT left_id,right_id FROM memory_links "
-                    "WHERE left_id=? OR right_id=? LIMIT 12",(item_id,item_id)
+                    "WHERE left_id=? OR right_id=? "
+                    "UNION SELECT left_id,right_id FROM memory_cortex_edges "
+                    "WHERE left_id=? OR right_id=?"
+                    ") LIMIT 16",(item_id,item_id,item_id,item_id)
                 ).fetchall()
                 for edge in edges:
                     pair=tuple(sorted((edge["left_id"],edge["right_id"])))
@@ -2303,4 +2351,5 @@ class MemoryEngine:
             branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
                     policy=self.policy(),network=self.brains(),autonomousBranches=branches,
-                    deep=self.deep_metrics(),evolution=self.evolution_status())
+                    deep=self.deep_metrics(),evolution=self.evolution_status(),
+                    cortex=self.cortex_status())
