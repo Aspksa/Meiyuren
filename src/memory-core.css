@@ -4,3 +4,9 @@
 .memory-core__brains strong{font-weight:600;color:#e9cea8}
 .memory-core__brains span{font-variant-numeric:tabular-nums}
 .memory-core select{min-width:0;max-width:100%;border:1px solid #d2aa7266;background:#17100c;color:#eacba3;border-radius:7px;font-size:11px;padding:5px}
+
+.memory-core__tree{border:1px solid #d2aa7250;border-radius:10px;padding:10px;margin:10px 0;max-height:400px;overflow:auto}
+.memory-core__tree-brain{border-top:1px solid #d2aa723a;padding:8px 0;font-size:12px}
+.memory-core__tree-brain>small{color:#bca17c;font-size:11px}
+.memory-core__tree-node{display:flex;gap:8px;justify-content:space-between;align-items:center;font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.memory-core__tree-node small{font-variant-numeric:tabular-nums;color:#bca17c}
