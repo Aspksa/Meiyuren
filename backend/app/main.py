@@ -67,6 +67,13 @@ class MemoryFeedbackInput(BaseModel):
     helpful: bool
 
 
+class NeuralFeedbackInput(BaseModel):
+    leftId: str = Field(min_length=1,max_length=80)
+    rightId: str = Field(min_length=1,max_length=80)
+    helpful: bool
+    conversationId: str = Field(default='main',max_length=40)
+
+
 
 class MemoryNeuralIndexInput(BaseModel):
     itemId: str = Field(min_length=1, max_length=40)
@@ -133,7 +140,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.17.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.20.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -448,6 +455,15 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/memory/cortex/evaluate")
     def cortex_mesh_evaluate():
         return engine.evaluate_cortex()
+
+    @app.post("/api/memory/neural/feedback")
+    def neural_synapse_feedback(body: NeuralFeedbackInput):
+        require_conversation(body.conversationId)
+        try:
+            return engine.neural_feedback(body.leftId,body.rightId,
+                                          body.helpful,body.conversationId)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
 
     @app.get("/api/memory/deep/overview")
     def deep_memory_overview(
