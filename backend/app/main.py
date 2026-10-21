@@ -710,6 +710,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     def rebuild_brain_links():
         return {"links":engine.rebuild_links()}
 
+    @app.get("/api/memory/universe/evolution-lab")
+    def universe_evolution_lab():
+        return engine.universe_evolution_lab()
+
     @app.get("/api/memory/universe/health")
     def universe_health():
         return engine.universe_health()
