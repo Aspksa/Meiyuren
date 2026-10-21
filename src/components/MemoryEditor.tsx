@@ -5,6 +5,7 @@ import {
   removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
   setMemoryPolicy, updateMemoryFact, previewMemoryRecall, getMemoryUsage,
   getMemoryBrainLinks, indexMemoryNeural, searchMemoryNeural, clearMemoryNeuralVectors,
+  rebuildMemoryBrainLinks,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
@@ -247,6 +248,10 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>)}
         </div>
       </>}
+      <button type="button" disabled={busy} onClick={() => void action(async () => {
+        const links = await rebuildMemoryBrainLinks();
+        return 'Локальных связей перестроено: ' + links + '. Cloud.ru не использовался.';
+      })}>Перестроить связи пяти мозгов</button>
       <button type="button" disabled={busy} onClick={() => void action(async () => {
         const result = await processMemoryJobs();
         return 'Локально обработано задач: ' + result.processed;
