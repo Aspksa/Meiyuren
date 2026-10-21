@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { consumeSSE, StreamError } from './chatApi';
+import { consumeSSE, describeIdleReport, StreamError } from './chatApi';
 
 function streamParts(parts: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -51,5 +51,22 @@ describe('SSE protocol Cloud.ru', () => {
       () => undefined).catch((cause: unknown) => cause);
     expect((error as StreamError).paid).toBe(false);
     expect((error as StreamError).saved).toBeNull();
+  });
+});
+
+describe('describeIdleReport', () => {
+  it('turns an idle run into readable lines and skips empty steps', () => {
+    const lines = describeIdleReport({
+      consolidation: { merged: 2, conflicts: [['Я люблю кофе', 'Я не люблю кофе']] },
+      strength: { facts: 10, strong: 3, fading: 1 },
+      selfTraining: { strategy: 'balanced', benchmark: 'self_retrieval_proxy', cases: 0 },
+      vectors: { updated: 0, total: 10 },
+      health: { integrity: 'ok', backup: 'meiyuren-2026-10-21.sqlite3' },
+    });
+    expect(lines[0]).toContain('2');
+    expect(lines[1]).toContain('Противоречие');
+    expect(lines.some(line => line.includes('поиск на твоих оценках'))).toBe(false);
+    expect(lines.some(line => line.includes('нечёткий'))).toBe(false);
+    expect(lines.at(-1)).toContain('резервная копия');
   });
 });

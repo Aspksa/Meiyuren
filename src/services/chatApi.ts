@@ -418,3 +418,43 @@ export async function getCloudBrains(): Promise<CloudBrains> {
 export async function setCloudBrains(brains: Partial<Record<MemoryBrain, boolean>>): Promise<CloudBrains> {
   return parse(await fetch('/api/memory/cloud-brains', { method: 'PUT', headers, body: JSON.stringify({ brains }) }));
 }
+
+export type IdleReport = {
+  consolidation?: { merged: number; conflicts: string[][] };
+  strength?: { facts: number; strong: number; fading: number };
+  selfTraining?: { strategy: string; benchmark?: string; cases: number };
+  unfinished?: { items: string[] };
+  vectors?: { updated: number; total: number };
+  health?: { integrity: string; backup: string | null };
+};
+export type IdleBriefing = { id: string; startedAt: number; finishedAt: number; interrupted: boolean; report: IdleReport };
+
+/** Отчёт режима простоя «Пока тебя не было», если он ещё не показан. */
+export async function getIdleBriefing(): Promise<IdleBriefing | null> {
+  return (await parse<{ briefing: IdleBriefing | null }>(await fetch('/api/idle/briefing', { cache: 'no-store' }))).briefing;
+}
+
+export async function markIdleBriefingSeen(): Promise<void> {
+  await parse(await fetch('/api/idle/seen', { method: 'POST', headers }));
+}
+
+/** Человекочитаемые строки отчёта; пустые шаги пропускаются. */
+export function describeIdleReport(report: IdleReport): string[] {
+  const lines: string[] = [];
+  const merged = report.consolidation?.merged ?? 0;
+  if (merged) lines.push(`Объединила повторы в памяти: ${merged}.`);
+  for (const [yes, no] of report.consolidation?.conflicts ?? []) lines.push(`Противоречие: «${yes}» и «${no}». Что из этого верно?`);
+  if (report.strength?.facts) {
+    lines.push(`Пересчитала силу фактов: крепких ${report.strength.strong}, тускнеющих ${report.strength.fading}.`);
+  }
+  if (report.selfTraining?.benchmark === 'feedback') {
+    lines.push(`Потренировала поиск на твоих оценках (${report.selfTraining.cases}), стратегия: ${report.selfTraining.strategy}.`);
+  }
+  if (report.vectors?.updated) lines.push(`Обновила локальный нечёткий поиск: ${report.vectors.updated} фактов.`);
+  if (report.health) {
+    lines.push(report.health.integrity === 'ok'
+      ? `База в порядке${report.health.backup ? ', резервная копия сделана' : ''}.`
+      : 'Проверка базы нашла проблему: стоит открыть настройки памяти.');
+  }
+  return lines;
+}
