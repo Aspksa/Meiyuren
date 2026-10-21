@@ -278,6 +278,27 @@ class MemoryEngine:
                     id INTEGER PRIMARY KEY CHECK(id=1), last_run INTEGER NOT NULL DEFAULT 0
                 )""")
                 conn.execute("INSERT OR IGNORE INTO memory_growth_maintenance(id) VALUES(1)")
+                # Deep Memory v0.12: event state and bounded, content-free retrieval feedback.
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_events (
+                    memory_id TEXT PRIMARY KEY, brain TEXT NOT NULL,
+                    kind TEXT NOT NULL, state TEXT NOT NULL,
+                    observed_at INTEGER NOT NULL, source_message_id TEXT,
+                    updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_deep_events_brain ON memory_deep_events(brain,state,observed_at)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_feedback (
+                    memory_id TEXT PRIMARY KEY, helpful INTEGER NOT NULL DEFAULT 0,
+                    unhelpful INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_telemetry (
+                    intent TEXT PRIMARY KEY, searches INTEGER NOT NULL DEFAULT 0,
+                    hits INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_outline (
+                    conversation_id TEXT NOT NULL, brain TEXT NOT NULL,
+                    item_ids TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(conversation_id,brain)
+                )""")
                 for root in BRAINS:
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_branches "
@@ -341,6 +362,8 @@ class MemoryEngine:
                         "ORDER BY updated_at DESC LIMIT 300"
                     ).fetchall():
                         self._link_local(conn,item["id"],item["content"])
+        # Миграция существующих фактов идемпотентна, без изменения текста.
+        self.rebuild_deep_index()
         # Подключаем старые подтверждённые факты к дереву при первом запуске v0.11.
         if self.policy()["auto_growth"]:
             self.grow_branches()
