@@ -36,6 +36,7 @@ class ConversationInput(BaseModel):
 class FactInput(BaseModel):
     content: str = Field(min_length=1, max_length=500)
     cloudAllowed: bool = False
+    brain: str | None = None
 
 
 class FactUpdate(BaseModel):
@@ -43,6 +44,7 @@ class FactUpdate(BaseModel):
     cloudAllowed: bool = False
     revision: int = Field(ge=1)
     expiresAt: int | None = None
+    brain: str | None = None
 
 
 class MemoryPolicyInput(BaseModel):
@@ -50,11 +52,23 @@ class MemoryPolicyInput(BaseModel):
     allow_cloud_facts: bool | None = None
     auto_extract: bool | None = None
     auto_summaries: bool | None = None
+    allow_cloud_embeddings: bool | None = None
 
 
 class MemoryReviewInput(BaseModel):
     approve: bool
     cloudAllowed: bool = False
+
+
+class MemoryNeuralIndexInput(BaseModel):
+    itemId: str = Field(min_length=1, max_length=40)
+    requestId: str = Field(min_length=36, max_length=36)
+
+
+class MemoryNeuralSearchInput(BaseModel):
+    q: str = Field(min_length=2, max_length=200)
+    conversationId: str = Field(default="main", max_length=40)
+    requestId: str = Field(min_length=36, max_length=36)
 
 
 class CloudKeyInput(BaseModel):
@@ -320,7 +334,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/memory/facts", status_code=201)
     def create_memory_fact(body: FactInput):
         try:
-            return engine.add_manual(body.content, cloud_allowed=body.cloudAllowed)
+            return engine.add_manual(body.content, cloud_allowed=body.cloudAllowed,brain=body.brain)
         except ValueError as exc:
             raise HTTPException(422, detail=str(exc)) from None
 
@@ -328,7 +342,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     def update_memory_fact(fact_id: str, body: FactUpdate):
         try:
             item = engine.edit(fact_id, content=body.content, cloud_allowed=body.cloudAllowed,
-                               revision=body.revision, expires_at=body.expiresAt)
+                               revision=body.revision, expires_at=body.expiresAt,brain=body.brain)
         except ValueError as exc:
             raise HTTPException(409, detail=str(exc)) from None
         if item is None:
@@ -388,6 +402,35 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.get("/api/memory/usage")
     def memory_usage():
         return {"entries": engine.usage()}
+
+    @app.get("/api/memory/brains")
+    def memory_brains():
+        return engine.brains()
+
+    @app.get("/api/memory/brains/{item_id}/links")
+    def memory_brain_links(item_id: str):
+        if not engine.explain(item_id):
+            raise HTTPException(404,detail="Воспоминание не найдено.")
+        return {"connections":engine.connections(item_id)}
+
+    @app.post("/api/memory/neural/index")
+    async def neural_index(body: MemoryNeuralIndexInput):
+        try:
+            return await engine.embed_item(body.itemId,body.requestId)
+        except ValueError as exc:
+            raise HTTPException(409,detail=str(exc)) from None
+
+    @app.post("/api/memory/neural/search")
+    async def neural_search(body: MemoryNeuralSearchInput):
+        require_conversation(body.conversationId)
+        try:
+            return {"matches":await engine.neural_search(body.q,body.conversationId,body.requestId)}
+        except ValueError as exc:
+            raise HTTPException(409,detail=str(exc)) from None
+
+    @app.delete("/api/memory/neural/vectors")
+    def clear_neural_vectors():
+        return {"deleted":engine.delete_vectors()}
 
     @app.get("/api/memory/status")
     def memory_status():
