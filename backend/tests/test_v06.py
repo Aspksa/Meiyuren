@@ -78,12 +78,27 @@ def test_cloud_diagnostics_does_not_generate(client, monkeypatch):
     assert isinstance(status["latencyMs"], int)
 
 
+def sse_events(body: str) -> list[tuple[str, dict]]:
+    """Разбор так же, как в браузере (consumeSSE): события разделены пустой строкой."""
+    events = []
+    for frame in body.split("\n\n"):
+        if not frame.strip():
+            continue
+        lines = frame.split("\n")
+        name = next(line[6:].strip() for line in lines if line.startswith("event:"))
+        data = "\n".join(line[5:].strip() for line in lines if line.startswith("data:"))
+        events.append((name, json.loads(data)))
+    return events
+
+
 def test_demo_stream_without_key(client):
     request_id = str(uuid.uuid4())
     with client.stream("POST", "/api/chat/stream", json={"text": "Привет", "requestId": request_id}) as result:
         assert result.status_code == 200
         body = result.read().decode("utf-8")
-    assert "event: delta" in body and "event: done" in body
+    events = sse_events(body)
+    assert [name for name, _ in events] == ["delta", "done"]
+    assert events[-1][1]["user"]["text"] == "Привет"
     assert len(client.get("/api/chat/messages").json()["messages"]) == 2
 
 
@@ -113,11 +128,13 @@ def test_cloud_stream_and_same_id_replay(client, monkeypatch):
     data = {"text": "Скажи привет", "requestId": request_id}
     with client.stream("POST", "/api/chat/stream", json=data) as result:
         body = result.read().decode("utf-8")
-    assert "event: done" in body and "Привет" in body
+    events = sse_events(body)
+    assert [name for name, _ in events] == ["delta", "delta", "done"]
+    assert events[-1][1]["assistant"]["text"] == "Привет, мир!"
     assert len(calls) == 1
     with client.stream("POST", "/api/chat/stream", json=data) as again:
         repeated = again.read().decode("utf-8")
-    assert "event: done" in repeated
+    assert [name for name, _ in sse_events(repeated)] == ["done"]
     assert len(calls) == 1
     rows = client.get("/api/chat/messages").json()["messages"]
     assert rows[-1]["text"] == "Привет, мир!"
