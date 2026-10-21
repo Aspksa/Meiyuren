@@ -19,14 +19,41 @@ import uuid
 from . import db
 
 MAX_CONTEXT = 1700
-BRAINS = ("identity", "episodes", "goals", "habits", "knowledge")
+# Logical long-term-memory domains, not separate LLM instances.
+# Existing five IDs remain stable for backward-compatible SQLite migrations.
+BRAINS = (
+    "identity", "episodes", "goals", "habits", "knowledge",
+    "relationships", "projects", "decisions",
+)
 EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBED_DIMS = 1024
 
 
 def classify_brain(content: str) -> str:
-    """Правила маршрутизации: AI не выдумывает категорию и факты."""
-    text = content.casefold()
+    """Консервативная маршрутизация явно сказанного, без AI-предположений.
+
+    Порядок важен: проектные цели и решения относятся к проектам/решениям,
+    а не к более общей категории целей. Категория не подтверждает истинность.
+    """
+    text = content.casefold().strip()
+    # Фразы о реальных людях относятся к связям, но не подтверждают чужие данные.
+    if re.search(
+        r"\b(?:мой|моя|моего|моей|мои|наша|наш|моим|мою)\s+"
+        r"(?:друг|подруга|друзья|партнёр|партнер|коллега|брат|сестра|мама|папа|"
+        r"жена|муж|семья|команда|знакомый|знакомая)\b"
+        r"|\b(?:дружу|общаюсь|встречаюсь|работаю вместе)\b", text
+    ):
+        return "relationships"
+    if re.search(
+        r"\b(?:я\s+(?:решил|решила|выбрал|выбрала)|мы\s+(?:решили|выбрали)|"
+        r"принял решение|приняла решение|окончательно решил|окончательно решила)\b", text
+    ):
+        return "decisions"
+    if re.search(
+        r"\b(?:проект|проекта|проектом|проекте|проекты|репозиторий|репозитория|"
+        r"разрабатываю|разработал|разработала|github|meiyuren|стартап)\b", text
+    ):
+        return "projects"
     if re.search(r"\b(?:цель|планирую|собираюсь|хочу|намерен|достичь)\b", text):
         return "goals"
     if re.search(r"\b(?:вчера|сегодня|позавчера|неделю назад|событие|путешествовал|побывал)\b", text):
