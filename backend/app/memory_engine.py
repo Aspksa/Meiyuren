@@ -2298,6 +2298,17 @@ class MemoryEngine:
             left_id, right_id, helpful, eligible=set(cortex.nodes))
         return {"adjustment": adjustment, "helpful": helpful}
 
+    def omega_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
+        """Unified six-system diagnostic built exclusively from visible evidence."""
+        from .omega import Omega
+        from .infinity_growth import Evidence
+        visible=self._visible_deep_rows(conversation_id,cloud_mode)
+        return Omega(
+            Evidence(id=r["id"],brain=r["brain"],text=r["content"],
+                     source=r["sourceMessageId"],scope=conversation_id)
+            for r in visible[:10000] if r.get("sourceMessageId")
+        ).overview()
+
     def infinity_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
         """On-demand, visibility-filtered, bounded growth proposal; no mutations."""
         from .infinity_growth import Evidence, InfinityGrowth
