@@ -40,9 +40,11 @@ def test_five_brains_classify_and_persist(app):
     assert [x["brain"] for x in items]==list(BRAINS[:5])
     status=client.get("/api/memory/brains")
     assert status.status_code==200
-    assert all(status.json()["brains"][name]==1 for name in BRAINS)
+    assert all(status.json()["brains"][name]==1 for name in BRAINS[:5])
+    assert all(status.json()["brains"][name]==0 for name in BRAINS[5:])
     with TestClient(create_app(path)) as restarted:
-        assert all(restarted.get("/api/memory/brains").json()["brains"][name]==1 for name in BRAINS)
+        assert all(restarted.get("/api/memory/brains").json()["brains"][name]==1 for name in BRAINS[:5])
+        assert all(restarted.get("/api/memory/brains").json()["brains"][name]==0 for name in BRAINS[5:])
 
 
 def test_graph_links_related_brains_and_recall_expands(app):
