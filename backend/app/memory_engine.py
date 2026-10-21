@@ -416,6 +416,8 @@ class MemoryEngine:
         # Подключаем старые подтверждённые факты к дереву при первом запуске v0.11.
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        if self.policy()["auto_evolution"]:
+            self.evolve()
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
@@ -557,6 +559,8 @@ class MemoryEngine:
         if self.policy()["auto_growth"]:
             self.grow_branches()
         self.rebuild_deep_index()
+        if self.policy()["auto_evolution"]:
+            self.evolve()
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -1117,6 +1121,115 @@ class MemoryEngine:
         self.rebuild_deep_index()
         return True
 
+    def evolution_status(self) -> dict:
+        """Small content-free status suitable for default UI."""
+        with closing(db.connection(self.path)) as conn:
+            state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+            micro=conn.execute("SELECT COUNT(*) FROM memory_microbrains").fetchone()[0]
+            synapses=conn.execute("SELECT COUNT(*) FROM memory_synaptic_weights").fetchone()[0]
+        return {"generation":state["generation"],"strategy":state["active_strategy"],
+                "evaluations":state["evaluations"],"lastEvaluated":state["last_evaluated"],
+                "microbrains":micro,"adaptiveSynapses":synapses,
+                "automatic":self.policy()["auto_evolution"]}
+
+    def _evolution_proxy(self,items: list[dict],strategy: str) -> float:
+        """Deterministic self-retrieval proxy; NOT real-world answer accuracy.
+
+        The query is derived from two lexically distinctive terms per item. We
+        measure whether that item's ID appears in top 3; never use raw messages
+        or submit a query to an external AI. Limit dataset and runtime.
+        """
+        if len(items)<12:
+            return 0.0
+        settings={
+            "balanced":(3.0,1.25,0.35),
+            "focused":(4.0,0.60,0.20),
+            "context":(2.50,2.00,0.45),
+        }
+        lexical,brain_bonus,feedback_bonus=settings[strategy]
+        fixtures=[]
+        for item in items:
+            stems=sorted(_keywords(item["content"]))
+            if len(stems)<2:
+                continue
+            fixtures.append((item["id"],set(stems[:2]),item["brain"]))
+        fixtures=fixtures[:80]
+        if len(fixtures)<12:
+            return 0.0
+        success=0
+        for golden_id,terms,brain in fixtures:
+            ranking=[]
+            for item in items:
+                common=len(terms & _keywords(item["content"]))
+                relevance=common*lexical
+                if item["brain"]==brain and common:
+                    relevance+=brain_bonus
+                relevance+=max(-2,min(2,item.get("helpful",0)-item.get("unhelpful",0)))*feedback_bonus
+                ranking.append((relevance,item["id"]))
+            ranking.sort(key=lambda pair:(-pair[0],pair[1]))
+            if golden_id in {item_id for _,item_id in ranking[:3]}:
+                success+=1
+        return round(success / len(fixtures),4)
+
+    def evolve(self,force: bool=False) -> dict:
+        """Offline bounded strategy benchmark, promote only measured improvement.
+
+        Never edits source code, model weights, user facts, cloud permissions,
+        historical chats or operational settings. No network or AI inference.
+        """
+        if not self.policy()["auto_evolution"] and not force:
+            return self.evolution_status()
+        stamp=now()
+        with closing(db.connection(self.path)) as conn:
+            state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+            if not force and stamp-state["last_evaluated"]<30*60*1000:
+                return self.evolution_status()
+        rows=self._visible_deep_rows("main",False)
+        # Global and main facts are enough for bounded offline proxy benchmark.
+        samples=rows[:120]
+        options=("balanced","focused","context")
+        scores={name:self._evolution_proxy(samples,name) for name in options}
+        fixture_count=sum(1 for item in samples if len(_keywords(item["content"]))>=2)
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+                if not force and stamp-state["last_evaluated"]<30*60*1000:
+                    return self.evolution_status()
+                current=state["active_strategy"]
+                winner=current
+                # Require enough fixtures and a clear improvement. Tie => keep old.
+                if fixture_count>=12:
+                    challenger=max(options,key=lambda name:(scores[name],-options.index(name)))
+                    if scores[challenger]>=scores[current]+0.05:
+                        winner=challenger
+                generation=state["generation"]+1
+                conn.executemany(
+                    "INSERT INTO memory_evolution_trials VALUES(?,?,?,?,?,?)",
+                    [(generation,name,min(fixture_count,80),scores[name],
+                      int(name==winner),stamp) for name in options]
+                )
+                conn.execute(
+                    "UPDATE memory_evolution_state SET generation=?,active_strategy=?,"
+                    "last_evaluated=?,evaluations=evaluations+1 WHERE id=1",
+                    (generation,winner,stamp)
+                )
+                # Keep bounded content-free history.
+                conn.execute(
+                    "DELETE FROM memory_evolution_trials WHERE generation<?",
+                    (generation-39,)
+                )
+        return self.evolution_status()
+
+    def reset_evolution(self) -> dict:
+        """Safe rollback to known default; leaves factual memory untouched."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute(
+                    "UPDATE memory_evolution_state SET active_strategy='balanced' WHERE id=1"
+                )
+        return self.evolution_status()
+
     def grow_branches(self) -> dict:
         """Полностью локальное саморазвитие дерева памяти по повторяющимся темам.
 
@@ -1203,7 +1316,19 @@ class MemoryEngine:
 
                 for brain in BRAINS:
                     expand(brain,brain,set(datasets[brain]),frozenset(),1)
-        return {"branches":nodes_created,"roots":len(BRAINS),"scanned":len(rows)}
+                # Every mature nested topic is a lightweight specialization, not an LLM.
+                candidates=conn.execute(
+                    "SELECT id,root_brain,support FROM memory_branches "
+                    "WHERE depth>=2 AND support>=3 ORDER BY support DESC,id LIMIT 96"
+                ).fetchall()
+                conn.execute("DELETE FROM memory_microbrains")
+                conn.executemany(
+                    "INSERT INTO memory_microbrains VALUES(?,?,?,?,?)",
+                    [(r["id"],r["root_brain"],r["id"],r["support"],stamp,stamp)
+                     for r in candidates]
+                )
+        return {"branches":nodes_created,"roots":len(BRAINS),
+                "scanned":len(rows),"microbrains":len(candidates)}
 
     def branch_tree(self) -> dict:
         with closing(db.connection(self.path)) as conn:
