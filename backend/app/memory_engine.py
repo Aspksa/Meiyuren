@@ -1398,6 +1398,274 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_links WHERE relation='neural_similarity'")
         return count
 
+    # Deep Memory — все выводы опираются на существующие подтверждённые факты.
+    # Привязанные к фактам индексы не хранят самостоятельные копии личного текста.
+    @staticmethod
+    def _event_type(content: str, brain: str) -> tuple[str, str]:
+        value=content.casefold()
+        if brain not in ("projects","goals"):
+            return ("decision" if brain=="decisions" else
+                    "event" if brain=="episodes" else "fact", "observed")
+        if re.search(r"\b(?:завершил|завершила|закончил|закончила|выполнил|выполнила|готово)\b",value):
+            return ("project" if brain=="projects" else "goal","completed")
+        if re.search(r"\b(?:отложил|отложила|приостановил|приостановила|поставил на паузу)\b",value):
+            return ("project" if brain=="projects" else "goal","paused")
+        if re.search(r"\b(?:начал|начала|разрабатываю|работаю над|изучаю|планирую|собираюсь)\b",value):
+            return ("project" if brain=="projects" else "goal","active")
+        return ("project" if brain=="projects" else "goal","unspecified")
+
+    @staticmethod
+    def _stated_reason(content: str) -> str | None:
+        """Только прямо указанная пользователем причина, не причинный вывод."""
+        m=re.search(r"(?iu)\b(?:потому\s+что|поскольку|из-за\s+того\s+что)\b\s+(.+)",content)
+        return m.group(1).strip()[:240] if m else None
+
+    def _update_deep_item(self,conn: sqlite3.Connection,item_id: str) -> None:
+        row=conn.execute(
+            "SELECT id,brain,content,created_at,updated_at,source_message_id,status,expires_at "
+            "FROM memory_items WHERE id=?",(item_id,)
+        ).fetchone()
+        if not row or row["status"]!="confirmed" or (
+            row["expires_at"] is not None and row["expires_at"]<=now()
+        ):
+            conn.execute("DELETE FROM memory_deep_events WHERE memory_id=?",(item_id,))
+            conn.execute("DELETE FROM memory_deep_feedback WHERE memory_id=?",(item_id,))
+            return
+        kind,state=self._event_type(row["content"],row["brain"])
+        conn.execute(
+            "INSERT INTO memory_deep_events"
+            "(memory_id,brain,kind,state,observed_at,source_message_id,updated_at) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET "
+            "brain=excluded.brain,kind=excluded.kind,state=excluded.state,"
+            "observed_at=excluded.observed_at,source_message_id=excluded.source_message_id,"
+            "updated_at=excluded.updated_at",
+            (item_id,row["brain"],kind,state,row["created_at"],row["source_message_id"],row["updated_at"])
+        )
+
+    def rebuild_deep_index(self) -> dict:
+        """Фоновая консолидация: только ID и состояния, без копий чувствительного текста."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "DELETE FROM memory_deep_events WHERE memory_id NOT IN "
+                    "(SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?))",(now(),)
+                )
+                conn.execute(
+                    "DELETE FROM memory_deep_feedback WHERE memory_id NOT IN "
+                    "(SELECT id FROM memory_items WHERE status='confirmed')"
+                )
+                items=conn.execute(
+                    "SELECT id,conversation_id,brain FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC LIMIT 2000",(now(),)
+                ).fetchall()
+                for item in items:
+                    self._update_deep_item(conn,item["id"])
+                # Краткие/подробные карты — только ссылки на подтверждённые факты.
+                # При отображении права доступа и существование фактов проверяются заново.
+                outlines: dict[tuple[str,str],list[str]]={}
+                for item in items:
+                    key=(item["conversation_id"],item["brain"])
+                    if len(outlines.setdefault(key,[]))<24:
+                        outlines[key].append(item["id"])
+                conn.execute("DELETE FROM memory_deep_outline")
+                conn.executemany(
+                    "INSERT INTO memory_deep_outline VALUES(?,?,?,?)",
+                    [(conversation,brain,json.dumps(ids),now())
+                     for (conversation,brain),ids in outlines.items()]
+                )
+        return {"indexed":len(items),"outlines":len(outlines)}
+
+    def _visible_deep_rows(self,conversation_id: str,cloud_mode: bool) -> list[dict]:
+        policy=self.policy()
+        if cloud_mode and not policy["allow_cloud_facts"]:
+            return []
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.*,e.kind AS deep_kind,e.state AS deep_state,"
+                "e.observed_at AS deep_observed,"
+                "COALESCE(f.helpful,0) AS helpful,COALESCE(f.unhelpful,0) AS unhelpful "
+                "FROM memory_items m LEFT JOIN memory_deep_events e ON e.memory_id=m.id "
+                "LEFT JOIN memory_deep_feedback f ON f.memory_id=m.id "
+                "WHERE m.status='confirmed' "
+                "AND (m.conversation_id='global' OR m.conversation_id=?) "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY m.updated_at DESC LIMIT 750",(conversation_id,now())
+            ).fetchall()
+        result=[]
+        for r in rows:
+            if (cloud_mode and not r["cloud_allowed"]) or SECRET.search(r["content"]):
+                continue
+            info=self._item(r)
+            kind,state=(r["deep_kind"],r["deep_state"]) if r["deep_kind"] else self._event_type(r["content"],r["brain"])
+            info.update(eventType=kind,eventState=state,
+                        observedAt=r["deep_observed"] or r["created_at"],
+                        statedReason=self._stated_reason(r["content"]),
+                        helpful=r["helpful"],unhelpful=r["unhelpful"])
+            result.append(info)
+        return result
+
+    @staticmethod
+    def _continuation_query(query: str) -> bool:
+        return bool(re.search(
+            r"(?iu)продолж|остановил|незаверш|что\s+дальше|верн[её]мся|"
+            r"над\s+чем\s+работал|следующий\s+шаг",query
+        ))
+
+    @staticmethod
+    def _route_brains(query: str) -> list[str]:
+        q=query.casefold()
+        hints={
+            "projects":("проект","разработ","github","код","продолж"),
+            "goals":("цел","план","дальше","хочу","этап"),
+            "decisions":("решени","выбрал","почему","решил"),
+            "episodes":("когда","вчера","раньше","истори","событи"),
+            "knowledge":("изуч","уме","знан","навык","python"),
+            "habits":("обычно","каждый","привыч"),
+            "relationships":("друг","семь","люд","отношен"),
+            "identity":("люблю","предпоч","нравится"),
+        }
+        return [brain for brain,phrases in hints.items() if any(term in q for term in phrases)]
+
+    def deep_recall(self,query: str,conversation_id: str,cloud_mode: bool,
+                    max_items: int=8) -> list[dict]:
+        """Координатор 8 мозгов: lexical + relevant event state + bounded 2-hop graph."""
+        cap=min(max(max_items,1),12)
+        rows=self._visible_deep_rows(conversation_id,cloud_mode)
+        if not rows:
+            return []
+        by_id={row["id"]:row for row in rows}
+        routed=set(self._route_brains(query))
+        tokens=_keywords(query)
+        continue_mode=self._continuation_query(query)
+        lexical=self.recall(query,conversation_id,cloud_mode)
+        base={row["id"] for row in lexical}
+        scored=[]
+        for row in rows:
+            shared=len(tokens & _keywords(row["content"]))
+            relevance=shared*3.0+(2.0 if row["id"] in base else 0)
+            if row["brain"] in routed and shared:
+                relevance+=1.25
+            if continue_mode and row["brain"] in ("projects","goals","decisions"):
+                relevance+=2.2
+                if row["eventState"]=="active":
+                    relevance+=1
+                if row["eventState"]=="completed":
+                    relevance-=1.4
+            relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*0.35
+            if relevance<=0:
+                continue
+            scored.append((relevance,row["updatedAt"],row))
+        scored.sort(key=lambda x:(-x[0],-x[1],x[2]["id"]))
+        seeds=[x[2] for x in scored[:cap]]
+        if not seeds:
+            return []
+        # Graph expansion capped at 2 hops and 80 edges, never bypass ACL.
+        explored={r["id"] for r in seeds}
+        frontier=[r["id"] for r in seeds[:4]]
+        candidates=[]
+        with closing(db.connection(self.path)) as conn:
+            for hop in range(2):
+                next_frontier=[]
+                for seed in frontier[:12]:
+                    neighbors=conn.execute(
+                        "SELECT CASE WHEN left_id=? THEN right_id ELSE left_id END AS neighbor,"
+                        "weight FROM memory_links WHERE left_id=? OR right_id=? "
+                        "ORDER BY weight DESC LIMIT 10",(seed,seed,seed)
+                    ).fetchall()
+                    for link in neighbors:
+                        nid=link["neighbor"]
+                        if nid in explored or nid not in by_id:
+                            continue
+                        explored.add(nid)
+                        item=by_id[nid]
+                        common=len(tokens & _keywords(item["content"]))
+                        if not common and not (continue_mode and item["brain"] in routed):
+                            continue
+                        candidates.append((common+float(link["weight"])*0.4-
+                                           (hop+1)*0.2,item["updatedAt"],item))
+                        next_frontier.append(nid)
+                frontier=next_frontier
+                if not frontier:
+                    break
+        # Не вытесняем сильные тематические совпадения слабыми ассоциациями.
+        selections=seeds[:min(len(seeds),cap)]
+        seen={x["id"] for x in selections}
+        for _,_,item in sorted(candidates,key=lambda x:(-x[0],-x[1])):
+            if len(selections)>=cap:
+                break
+            if item["id"] not in seen:
+                selections.append(item)
+                seen.add(item["id"])
+        return selections
+
+    def deep_overview(self,conversation_id: str,cloud_mode: bool=False) -> dict:
+        """Хронология, состояния проектов и уровни деталей, всегда из живых записей."""
+        rows=self._visible_deep_rows(conversation_id,cloud_mode)
+        by_brain={brain:[] for brain in BRAINS}
+        for item in rows:
+            by_brain[item["brain"]].append(item)
+        outlines=[]
+        for brain in BRAINS:
+            active=by_brain[brain]
+            outlines.append({
+                "brain":brain,"count":len(active),
+                "short":[r["content"] for r in active[:3]],
+                "detailed":active[:16],
+            })
+        timeline=sorted(rows,key=lambda x:(-x["observedAt"],x["id"]))[:40]
+        continuation=[
+            item for item in rows if item["brain"] in ("projects","goals","decisions")
+            and item["eventState"] not in ("completed",)
+        ][:16]
+        return {"brains":outlines,"timeline":timeline,
+                "continuation":continuation,
+                "decisions":[item for item in rows if item["brain"]=="decisions"][:24],
+                "count":len(rows),"cloudMode":cloud_mode}
+
+    def record_feedback(self,item_id: str,helpful: bool) -> dict:
+        """Явная обратная связь; повторение факта не повышает его достоверность."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                row=conn.execute("SELECT id FROM memory_items WHERE id=? AND status='confirmed'",
+                                 (item_id,)).fetchone()
+                if not row:
+                    raise ValueError("Воспоминание удалено или устарело.")
+                conn.execute(
+                    "INSERT INTO memory_deep_feedback(memory_id,helpful,unhelpful,updated_at) "
+                    "VALUES(?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET "
+                    "helpful=helpful+excluded.helpful,unhelpful=unhelpful+excluded.unhelpful,"
+                    "updated_at=excluded.updated_at",
+                    (item_id,int(helpful),int(not helpful),now())
+                )
+                r=conn.execute("SELECT * FROM memory_deep_feedback WHERE memory_id=?",(item_id,)).fetchone()
+        return {"memoryId":item_id,"helpful":r["helpful"],"unhelpful":r["unhelpful"]}
+
+    def deep_metrics(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            metrics=conn.execute(
+                "SELECT intent,searches,hits FROM memory_deep_telemetry ORDER BY intent"
+            ).fetchall()
+            count=conn.execute("SELECT COUNT(*) FROM memory_deep_events").fetchone()[0]
+        return {"indexedEvents":count,
+                "search":[{"intent":r["intent"],"searches":r["searches"],
+                           "hits":r["hits"]} for r in metrics]}
+
+    def _observe_recall_quality(self,query: str,selected: list[dict]) -> None:
+        intent="continuation" if self._continuation_query(query) else (
+            "timeline" if "episodes" in self._route_brains(query) else "general"
+        )
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute(
+                    "INSERT INTO memory_deep_telemetry(intent,searches,hits,updated_at) "
+                    "VALUES(?,1,?,?) ON CONFLICT(intent) DO UPDATE SET "
+                    "searches=searches+1,hits=hits+excluded.hits,updated_at=excluded.updated_at",
+                    (intent,int(bool(selected)),now())
+                )
+
     def status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             confirmed=conn.execute("SELECT COUNT(*) FROM memory_items WHERE status='confirmed'").fetchone()[0]
