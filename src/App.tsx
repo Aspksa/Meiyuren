@@ -5,6 +5,7 @@ import { CloudSettingsPanel } from './components/CloudSettingsPanel';
 import { Avatar } from './components/Avatar';
 import { ChatPanel } from './components/ChatPanel';
 import { SettingsPanel } from './components/SettingsPanel';
+import { NeuralUniverse } from './components/NeuralUniverse';
 import { useAppStore } from './store/useAppStore';
 import { getCloudSettings } from './services/cloudApi';
 
@@ -13,6 +14,7 @@ export default function App() {
   const openSettings = useAppStore((s) => s.openSettings);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
+  const [networkOpen, setNetworkOpen] = useState(false);
   const chatOpen = useAppStore((s) => s.chatOpen);
   const settingsOpen = useAppStore((s) => s.settingsOpen);
 
@@ -29,7 +31,7 @@ export default function App() {
 
   // Панели открываются на одном месте рядом с меню, поэтому одновременно видна только одна.
   useEffect(() => {
-    if (chatOpen || settingsOpen) { setUpdatesOpen(false); setCloudOpen(false); }
+    if (chatOpen || settingsOpen) { setUpdatesOpen(false); setCloudOpen(false); setNetworkOpen(false); }
   }, [chatOpen, settingsOpen]);
 
   // Escape слушаем на window: так он работает, даже когда фокус на body.
@@ -38,6 +40,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       const state = useAppStore.getState();
+      if (networkOpen) { setNetworkOpen(false); return; }
       if (cloudOpen) { setCloudOpen(false); return; }
       if (updatesOpen) { setUpdatesOpen(false); return; }
       if (state.settingsOpen) state.closeSettings();
@@ -45,7 +48,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [updatesOpen, cloudOpen]);
+  }, [updatesOpen, cloudOpen, networkOpen]);
 
   return (
     <div className="site">
@@ -57,15 +60,18 @@ export default function App() {
 
       <IconSidebar
         updatesOpen={updatesOpen}
-        onHome={() => { setUpdatesOpen(false); setCloudOpen(false); useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); }}
-        onChat={() => { setUpdatesOpen(false); setCloudOpen(false); if (chatOpen) useAppStore.getState().closeChat(); else openChat(); }}
-        onSettings={() => { setUpdatesOpen(false); setCloudOpen(false); if (settingsOpen) useAppStore.getState().closeSettings(); else openSettings({ x: 110, y: 120 }); }}
+        onHome={() => { setNetworkOpen(false); setUpdatesOpen(false); setCloudOpen(false); useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); }}
+        onChat={() => { setNetworkOpen(false); setUpdatesOpen(false); setCloudOpen(false); if (chatOpen) useAppStore.getState().closeChat(); else openChat(); }}
+        onSettings={() => { setNetworkOpen(false); setUpdatesOpen(false); setCloudOpen(false); if (settingsOpen) useAppStore.getState().closeSettings(); else openSettings({ x: 110, y: 120 }); }}
         chatOpen={chatOpen}
         settingsOpen={settingsOpen}
-        onUpdates={() => { useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); setCloudOpen(false); setUpdatesOpen((value) => !value); }}
+        onUpdates={() => { setNetworkOpen(false); useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); setCloudOpen(false); setUpdatesOpen((value) => !value); }}
+        networkOpen={networkOpen}
+        onNetwork={() => { useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); setUpdatesOpen(false); setCloudOpen(false); setNetworkOpen(v => !v); }}
         cloudOpen={cloudOpen}
-        onCloud={() => { useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); setUpdatesOpen(false); setCloudOpen((value) => !value); }}
+        onCloud={() => { setNetworkOpen(false); useAppStore.getState().closeSettings(); useAppStore.getState().closeChat(); setUpdatesOpen(false); setCloudOpen((value) => !value); }}
       />
+      <NeuralUniverse open={networkOpen} onClose={() => setNetworkOpen(false)} />
       <UpdatePanel open={updatesOpen} onClose={() => setUpdatesOpen(false)} />
       <CloudSettingsPanel open={cloudOpen} onClose={() => setCloudOpen(false)} />
       <Avatar />

@@ -1,0 +1,17 @@
+.neural-universe{position:fixed;z-index:40;top:5vh;left:calc(var(--sidebar-width,76px) + 38px);right:3vw;bottom:5vh;overflow:auto;background:radial-gradient(ellipse at 48% 45%,#14214b 0%,#080f29 65%,#050b1b 100%);border:1px solid #4567a577;border-radius:22px;box-shadow:0 20px 90px #000b,0 0 30px #527df52a;color:#ecf3ff;padding:26px;font-family:inherit}
+.neural-universe__head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #7b9cff33;padding-bottom:18px}
+.neural-universe__head small,.neural-universe__detail small{color:#81afff;letter-spacing:.24em;font-size:11px}
+.neural-universe__head h2{font-size:32px;letter-spacing:.03em;margin:8px 0;color:#fff}.neural-universe__head h2 span{font-size:14px;color:#98b8ff;margin-left:10px}
+.neural-universe__head p{margin:0;color:#9cacd0}.neural-universe__head button{background:#172750;border:1px solid #6696ff77;border-radius:14px;color:#fff;font-size:28px;width:45px;height:45px;cursor:pointer}
+.neural-universe__stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:19px 0}
+.neural-universe__metric{background:#0c1a39b3;border:1px solid #5978c044;border-radius:15px;padding:15px;min-width:0}.neural-universe__metric span{display:block;font-size:12px;color:#a3bbde}.neural-universe__metric strong{font-size:29px;display:block;margin-top:7px;color:#9de7ff;font-variant-numeric:tabular-nums}
+.neural-universe__body{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(220px,1fr);gap:16px}
+.neural-universe__map{background:radial-gradient(circle at center,#29377088,#090f2688 65%);border:1px solid #688cea3b;border-radius:16px;overflow:hidden}
+.neural-universe__map svg{display:block;width:100%;max-height:59vh}.neural-universe__map p{text-align:center;margin:0 12px 15px;font-size:11px;color:#aac0db}
+.neural-universe__detail{background:#0d1735b7;border:1px solid #688cea44;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:12px}
+.neural-universe__detail h3{font-size:25px;margin:0;color:#fff}.neural-universe__detail>strong{font-size:58px;color:#9fe8ff;font-variant-numeric:tabular-nums;line-height:1}.neural-universe__detail>span{color:#b5c9eb}
+.neural-universe__detail p{color:#a9bbda;line-height:1.6;font-size:13px;margin:0}.neural-universe__detail code{color:#b8e7ff}
+.neural-universe__detail .neural-universe__note{margin-top:auto;border-top:1px solid #5772ba55;padding-top:17px;font-size:12px}
+.neural-universe__bar{height:6px;border-radius:20px;background:#273659;overflow:hidden}.neural-universe__bar i{display:block;background:linear-gradient(90deg,#7581ff,#60ecff);height:100%;border-radius:20px;transition:width .5s}
+.neural-universe__error{color:#ffd0d0;background:#8a2b3355;padding:10px 14px;border-radius:10px}
+@media(max-width:860px){.neural-universe{left:76px;right:8px;top:10px;bottom:10px;padding:15px}.neural-universe__stats{grid-template-columns:repeat(2,minmax(0,1fr))}.neural-universe__body{grid-template-columns:1fr}.neural-universe__head h2{font-size:24px}}
