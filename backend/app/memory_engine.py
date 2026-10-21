@@ -19,6 +19,7 @@ import time
 import uuid
 
 from . import db
+from .neural_cortex import Node, NeuralCortex
 
 MAX_CONTEXT = 1700
 # Logical long-term-memory domains, not separate LLM instances.
@@ -2220,6 +2221,30 @@ class MemoryEngine:
                         # Cross-brain relevance is grounded by the linked seed.
                         value=overlap*2+float(edge["strength"])+float(edge["adjustment"])
                         bridge_options.append((value,neighbor["updatedAt"],neighbor))
+        # v0.19: optional ephemeral Cortex 2.0 augmentation. Construct ONLY
+        # from live, consent-filtered rows. Missing source IDs are excluded,
+        # and the original lexical slots remain protected.
+        if cap >= 3 and len(rows) <= 600:
+            sourced = [r for r in rows if r.get("sourceMessageId")
+                       and r.get("brain") in BRAINS]
+            if len(sourced) >= 2:
+                neural = NeuralCortex(
+                    Node(id=r["id"], brain=r["brain"], text=r["content"],
+                         source=r["sourceMessageId"])
+                    for r in sourced
+                )
+                for seed in seeds[:3]:
+                    if seed["id"] not in neural.nodes:
+                        continue
+                    for hit in neural.recall(seed["id"], "global", depth=3,
+                                             limit=6, budget=40):
+                        neighbor = by_id.get(hit["id"])
+                        if not neighbor or neighbor["brain"] == seed["brain"]:
+                            continue
+                        overlap = len(tokens & _keywords(neighbor["content"]))
+                        # Graph evidence assists ranking but never creates facts.
+                        score = overlap * 2 + float(hit["score"]) * 0.5
+                        bridge_options.append((score, neighbor["updatedAt"], neighbor))
         bridge_options.sort(key=lambda x:(-x[0],-x[1],x[2]["id"]))
         bridges=[]
         bridge_seen={seed["id"] for seed in seeds[:max(cap-2,1)]}
