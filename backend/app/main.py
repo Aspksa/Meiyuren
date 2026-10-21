@@ -710,6 +710,31 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     def rebuild_brain_links():
         return {"links":engine.rebuild_links()}
 
+    @app.get("/api/memory/universe/health")
+    def universe_health():
+        return engine.universe_health()
+
+    @app.get("/api/memory/universe/snapshots")
+    def universe_snapshots():
+        return engine.universe_snapshot()
+
+    @app.get("/api/memory/universe/events")
+    async def universe_events(request: Request):
+        """Server-sent bounded aggregate changes; never transmit memory content."""
+        async def iterate():
+            previous=None
+            while not await request.is_disconnected():
+                current=engine.universe_health()
+                payload=json.dumps(current,ensure_ascii=False,sort_keys=True)
+                if payload!=previous:
+                    yield "event: health\\ndata: "+payload+"\\n\\n"
+                    previous=payload
+                else:
+                    yield ": heartbeat\\n\\n"
+                await asyncio.sleep(5)
+        return StreamingResponse(iterate(),media_type="text/event-stream",
+                                 headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
+
     @app.get("/api/memory/universe/graph")
     def universe_graph(limit: int = Query(default=180,ge=1,le=300)):
         return engine.neural_universe_graph(limit)

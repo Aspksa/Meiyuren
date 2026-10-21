@@ -19,6 +19,8 @@ const initial = BRAINS.reduce((acc, [key]) => ({ ...acc, [key]: 0 }), {} as Reco
 export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState('');
+  const [health, setHealth] = useState<{healthy:boolean;orphanLinks:number;orphanVectors:number}|null>(null);
+  const [snapshots,setSnapshots] = useState<{timestamp:number;brains:Record<string,number>}[]>([]);
   const [graph, setGraph] = useState<Graph | null>(null);
   const [mode, setMode] = useState<'universe'|'synapses'|'evolution'|'activity'>('universe');
   const [selected, setSelected] = useState<BrainId>('projects');
@@ -41,8 +43,11 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
       }
     }
     void refresh();
+    void fetch('/api/memory/universe/snapshots',{signal:controller.signal}).then(r=>r.ok?r.json():null).then(data=>{if(!controller.signal.aborted&&data)setSnapshots(data.snapshots??[]);}).catch(()=>{});
+    const stream = new EventSource('/api/memory/universe/events');
+    stream.addEventListener('health',(message)=>{if(controller.signal.aborted)return;try{setHealth(JSON.parse((message as MessageEvent).data));void refresh();}catch{/* malformed event ignored */}});
     const interval = window.setInterval(() => void refresh(), 8000);
-    return () => { controller.abort(); window.clearInterval(interval); };
+    return () => { controller.abort(); stream.close(); window.clearInterval(interval); };
   }, [open]);
   if (!open) return null;
   const counts = status?.network?.brains ?? initial;
@@ -72,6 +77,7 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     <div className="neural-universe__tabs" role="tablist" aria-label="Режим нейросети">
       {([['universe','Вселенная'],['synapses','Синапсы'],['evolution','Эволюция'],['activity','Активность']] as const).map(([id,label])=><button key={id} role="tab" aria-selected={mode===id} className={mode===id?'is-active':''} onClick={()=>setMode(id)}>{label}</button>)}
     </div>
+    <div className="neural-universe__health" role="status">Проверка связности: {health ? (health.healthy ? 'нет обнаруженных повреждений' : `проблемы: ${health.orphanLinks} связей, ${health.orphanVectors} векторов`) : 'ожидание данных'} · Сохранённых снимков: {snapshots.length} <button type="button" onClick={()=>void fetch('/api/memory/universe/snapshots').then(r=>r.json()).then(d=>setSnapshots(d.snapshots??[]))}>Сохранить текущий снимок</button></div>
     {mode==='synapses' && <div className="neural-universe__ledger"><h3>Подтверждённые связи ({graph?.edges.length ?? 0})</h3>{graph?.edges.length ? graph.edges.slice(0,35).map((edge,index)=><p key={index}>{edge.source.slice(0,8)} ↔ {edge.target.slice(0,8)} · {edge.relation} · вес {edge.weight.toFixed(2)}</p>):<p>Подтверждённых связей пока нет.</p>}</div>}
     {mode==='evolution' && <div className="neural-universe__ledger"><h3>История изменения памяти</h3>{graph?.events.filter(e=>e.kind==='revision').length ? graph.events.filter(e=>e.kind==='revision').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · {e.action} · узел {e.nodeId.slice(0,8)}</p>):<p>История изменений пока отсутствует.</p>}</div>}
     {mode==='activity' && <div className="neural-universe__ledger"><h3>Подтверждённые обращения к памяти</h3>{graph?.events.filter(e=>e.kind==='recall').length ? graph.events.filter(e=>e.kind==='recall').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · извлечён узел {e.nodeId.slice(0,8)}</p>):<p>Журнал обращений пока пуст. Внутренние мысли модели не регистрируются.</p>}</div>}
