@@ -77,7 +77,7 @@ def preference_topic(content: str) -> tuple[str, bool] | None:
     return (topic, bool(positive))
 
 
-STOPWORDS = frozenset(("мне","что","это","как","или","для","мой","моя","мои","когда",
+STOPWORDS = frozenset(("люблю","предпочитаю","нравится","нравятся","больше","мне","что","это","как","или","для","мой","моя","мои","когда",
                       "где","наш","ваш","могу","можно","есть","еще","ещё","хочу",
                       "тебе","меня","будет","было","были","кто","про"))
 
@@ -248,6 +248,11 @@ class MemoryEngine:
                         "VALUES(?,?,?,'legacy','confirmed',?,?)",
                         (row["id"],row["content"],digest(row["content"]),row["created_at"],row["created_at"]),
                     )
+                # Идемпотентный пересчёт локальных областей и графа для legacy-данных.
+                if "brain" not in item_columns:
+                    for row in conn.execute("SELECT id,content FROM memory_items"):
+                        conn.execute("UPDATE memory_items SET brain=? WHERE id=?",
+                                     (classify_brain(row["content"]),row["id"]))
                 conn.execute(
                     "INSERT INTO memory_fts(item_id,content) "
                     "SELECT m.id,m.content FROM memory_items m "
@@ -699,6 +704,31 @@ class MemoryEngine:
             out.append(self._item(row))
             if len(out)>=5:
                 break
+        # Один переход по проверенным локальным связям. Не обходим весь граф.
+        if out and len(out)<5:
+            seen={item["id"] for item in out}
+            with closing(db.connection(self.path)) as conn:
+                for seed in out[:3]:
+                    neighbors=conn.execute(
+                        "SELECT m.* FROM memory_links l JOIN memory_items m "
+                        "ON m.id=CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END "
+                        "WHERE (l.left_id=? OR l.right_id=?) AND l.weight>=0.18 "
+                        "AND m.status='confirmed' AND (m.conversation_id='global' OR m.conversation_id=?) "
+                        "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                        "ORDER BY l.weight DESC LIMIT 8",
+                        (seed["id"],seed["id"],seed["id"],conversation_id,now())
+                    ).fetchall()
+                    for neighbor in neighbors:
+                        if neighbor["id"] in seen or SECRET.search(neighbor["content"]):
+                            continue
+                        if cloud_mode and not neighbor["cloud_allowed"]:
+                            continue
+                        seen.add(neighbor["id"])
+                        out.append(self._item(neighbor))
+                        if len(out)>=5:
+                            break
+                    if len(out)>=5:
+                        break
         return out
 
     def preview(self, query: str, conversation_id: str, cloud_mode: bool) -> dict:
@@ -996,4 +1026,5 @@ class MemoryEngine:
             candidates=conn.execute("SELECT COUNT(*) FROM memory_candidates WHERE status='pending'").fetchone()[0]
             queued=conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE state IN ('pending','running')").fetchone()[0]
             summaries=conn.execute("SELECT COUNT(*) FROM memory_summaries WHERE status='draft'").fetchone()[0]
-        return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,policy=self.policy())
+        return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
+                    policy=self.policy(),network=self.brains())
