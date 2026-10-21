@@ -20,6 +20,7 @@ import uuid
 
 from . import db
 from .neural_cortex import Node, NeuralCortex
+from .neural_synapses import SynapticStore
 
 MAX_CONTEXT = 1700
 # Logical long-term-memory domains, not separate LLM instances.
@@ -2232,6 +2233,9 @@ class MemoryEngine:
                     Node(id=r["id"], brain=r["brain"], text=r["content"],
                          source=r["sourceMessageId"])
                     for r in sourced
+                )
+                SynapticStore(self.path).apply(
+                    neural, eligible=set(neural.nodes)
                 )
                 for seed in seeds[:3]:
                     if seed["id"] not in neural.nodes:
