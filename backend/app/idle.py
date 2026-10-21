@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import db, semantic
 from .brain_growth import BrainGrowth
+from .reasoning import Reasoner
 from .memory_engine import (
     AUTO_PRIVATE, SECRET, TOKENS, MemoryEngine, _keywords, canonical, now, preference_topic,
     drop_backups, local_vector,
@@ -38,6 +39,7 @@ class IdleRuntime:
         self.path = path
         self.engine = engine
         self.growth = BrainGrowth(path, engine)
+        self.reasoner = Reasoner(path, engine)
         self._lock = threading.Lock()
         self._last_activity = now()
 
@@ -130,6 +132,7 @@ class IdleRuntime:
             ("vectors", self.vectorize),
             ("meaning", self.meaning),
             ("growth", self.grow),
+            ("logic", self.logic),
             ("curiosity", self.curiosity),
             ("health", self.health),
         )
@@ -299,6 +302,10 @@ class IdleRuntime:
         if not self.engine.policy()["auto_growth"]:
             return {"state": "off"}
         return self.growth.grow()
+
+    def logic(self) -> dict:
+        """Логический мозг: цепочки, сроки, противоречия, причины, правила."""
+        return self.reasoner.rebuild()
 
     def curiosity(self) -> dict:
         if not self.engine.policy()["curiosity"]:

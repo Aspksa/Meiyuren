@@ -20,6 +20,7 @@ import type {
 import { useAppStore } from '../store/useAppStore';
 import { BrainMap } from './BrainMap';
 import { EntityPanel } from './EntityPanel';
+import { LogicPanel } from './LogicPanel';
 
 const BRAIN_NAMES: Record<MemoryBrain, string> = {
   identity: 'Личность', episodes: 'События', goals: 'Цели',
@@ -482,6 +483,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       })}>Обработать очередь памяти</button>
 
       <EntityPanel active={active} version={entityVersion} />
+      <LogicPanel active={active} version={entityVersion} />
 
       <h4>Разрешения</h4>
       <p>По умолчанию память и заметки не передаются Cloud.ru. История текущего диалога передаётся провайдеру, когда включён облачный чат.</p>

@@ -90,7 +90,11 @@ export type MemoryRecallPreview = { memories: MemoryFact[]; context: string };
 export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode: boolean; selectedAt: number; content: string };
 export type ChatMatch = Message & { conversationId: string };
 export type RecallMemory = { id: string; content: string; brain: MemoryBrain };
-export type RecallTrace = { traceId: string; items: RecallMemory[] };
+export type Inference = {
+  id: string; kind: 'chain' | 'time' | 'overdue' | 'conflict' | 'helps' | 'rule';
+  content: string; confidence: number; ask: boolean; because: RecallMemory[];
+};
+export type RecallTrace = { traceId: string; items: RecallMemory[]; inferences?: Inference[] };
 export type Curiosity = { id: string; question: string };
 export type Exchange = {
   user: Message; assistant: Message; memory?: RecallTrace; curiosity?: Curiosity; interrupted?: boolean;
@@ -507,4 +511,14 @@ export async function removeCustomBrain(id: string): Promise<void> {
 /** «Не спрашивать об этом»: вопрос любопытства больше не появится. */
 export async function dismissCuriosity(id: string): Promise<void> {
   await parse(await fetch('/api/memory/curiosity/' + encodeURIComponent(id) + '/dismiss', { method: 'POST', headers }));
+}
+
+/** Логический мозг: выводы из фактов с основаниями. */
+export async function getInferences(): Promise<Inference[]> {
+  return (await parse<{ inferences: Inference[] }>(await fetch('/api/memory/inferences', { cache: 'no-store' }))).inferences;
+}
+
+/** 👎 по выводу: он неверный и больше не появится. */
+export async function rejectInference(id: string): Promise<void> {
+  await parse(await fetch('/api/memory/inferences/' + encodeURIComponent(id) + '/reject', { method: 'POST', headers }));
 }

@@ -45,7 +45,7 @@ def test_idle_run_reports_all_steps_and_briefing_is_shown_once(app):
     result = client.post("/api/idle/run").json()
     assert result["ran"] and not result["interrupted"]
     assert set(result["report"]) == {"consolidation", "strength", "selfTraining", "meaning",
-                                     "unfinished", "vectors", "growth",
+                                     "unfinished", "vectors", "growth", "logic",
                                      "curiosity", "health"}
     assert result["report"]["health"]["integrity"] == "ok"
     assert any("Kitsune" in item for item in result["report"]["unfinished"]["items"])
