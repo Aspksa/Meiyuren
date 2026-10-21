@@ -21,6 +21,7 @@ import uuid
 from . import db
 from .neural_cortex import Node, NeuralCortex
 from .neural_synapses import SynapticStore
+from .smart_memory import durable_statement
 
 MAX_CONTEXT = 1700
 # Logical long-term-memory domains, not separate LLM instances.
@@ -759,12 +760,13 @@ class MemoryEngine:
                 explicit=EXPLICIT.match(text)
                 implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
                 direct=AUTO_DIRECT.match(text)
-                if not (explicit or implicit or direct):
+                natural=durable_statement(text)
+                if not (explicit or implicit or direct or natural):
                     return
                 # Пересказ, цитата, вопрос или предположение — не прямой факт пользователя.
                 if "?" in text or text.lstrip().startswith(("«",'"',">")):
                     return
-                content=(explicit.group(1) if explicit else text).strip().rstrip(".")
+                content=(explicit.group(1) if explicit else (natural or text)).strip().rstrip(".")
                 if not 4<=len(content)<=400 or SECRET.search(content) or AUTO_PRIVATE.search(content):
                     return
                 fingerprint=digest(content)
