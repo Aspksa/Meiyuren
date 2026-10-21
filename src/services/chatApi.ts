@@ -40,6 +40,18 @@ export type MemoryExplanation = {
   item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
   revisions: { revision: number; action: string; content: string; createdAt: number }[];
 };
+export type DeepMemoryFact = MemoryFact & {
+  eventType: string; eventState: string; observedAt: number; statedReason: string | null;
+  helpful: number; unhelpful: number;
+};
+export type DeepMemoryBrain = { brain: MemoryBrain; count: number; short: string[]; detailed: DeepMemoryFact[] };
+export type DeepMemoryOverview = {
+  brains: DeepMemoryBrain[]; timeline: DeepMemoryFact[]; continuation: DeepMemoryFact[];
+  decisions: DeepMemoryFact[]; count: number; cloudMode: boolean;
+};
+export type DeepMemoryMetrics = {
+  indexedEvents: number; search: { intent: string; searches: number; hits: number }[];
+};
 export type MemoryRecallPreview = { memories: MemoryFact[]; context: string };
 export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode: boolean; selectedAt: number; content: string };
 export type ChatMatch = Message & { conversationId: string };
@@ -174,6 +186,29 @@ export async function clearMemoryNeuralVectors(): Promise<number> {
   return (await parse<{ deleted: number }>(
     await fetch('/api/memory/neural/vectors', { method: 'DELETE', headers }),
   )).deleted;
+}
+
+export async function getDeepMemoryOverview(
+  conversationId = 'main', cloudMode = false,
+): Promise<DeepMemoryOverview> {
+  const params = new URLSearchParams({ conversationId, cloudMode: String(cloudMode) });
+  return parse(await fetch('/api/memory/deep/overview?' + params.toString(), { cache: 'no-store' }));
+}
+
+export async function getDeepMemoryMetrics(): Promise<DeepMemoryMetrics> {
+  return parse(await fetch('/api/memory/deep/metrics', { cache: 'no-store' }));
+}
+
+export async function rebuildDeepMemoryIndex(): Promise<{ indexed: number; outlines: number }> {
+  return parse(await fetch('/api/memory/deep/rebuild', { method: 'POST', headers }));
+}
+
+export async function sendDeepMemoryFeedback(
+  memoryId: string, helpful: boolean,
+): Promise<{ memoryId: string; helpful: number; unhelpful: number }> {
+  return parse(await fetch('/api/memory/deep/facts/' + encodeURIComponent(memoryId) + '/feedback', {
+    method: 'POST', headers, body: JSON.stringify({ helpful }),
+  }));
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {
