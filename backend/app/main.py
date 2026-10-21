@@ -129,7 +129,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.12.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.13.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -395,6 +395,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not changed:
             raise HTTPException(404,detail="Выписка не найдена.")
         return {"success": True}
+
+    @app.get("/api/memory/episodes")
+    def memory_episodes(
+        conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.episode_overview(conversationId,cloudMode)
+
+    @app.post("/api/memory/episodes/rebuild")
+    def rebuild_memory_episodes():
+        return engine.rebuild_episodes()
 
     @app.get("/api/memory/deep/overview")
     def deep_memory_overview(
