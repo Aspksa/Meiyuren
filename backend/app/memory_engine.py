@@ -1926,6 +1926,196 @@ class MemoryEngine:
         }
         return [brain for brain,phrases in hints.items() if any(term in q for term in phrases)]
 
+    def rebuild_cortex(self) -> dict:
+        """Offline, bounded cross-brain links from >=2 shared lexical terms.
+
+        Only confirmed non-expired facts from the same conversation, or a global
+        fact and that conversation, may connect. No inferred cause/truth and no
+        separate text store. An immediate transaction prevents stale snapshots.
+        """
+        stamp=now()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows=conn.execute(
+                    "SELECT id,content,brain,conversation_id FROM memory_items "
+                    "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC,id LIMIT 500",(stamp,)
+                ).fetchall()
+                items={}
+                postings: dict[str,list[str]]={}
+                for row in rows:
+                    if row["brain"] not in BRAINS or SECRET.search(row["content"]):
+                        continue
+                    terms=_keywords(row["content"])
+                    if len(terms)<2:
+                        continue
+                    items[row["id"]]=(row["brain"],row["conversation_id"],terms)
+                    for term in terms:
+                        postings.setdefault(term,[]).append(row["id"])
+                possible: dict[tuple[str,str],int]={}
+                for term,ids in postings.items():
+                    # Very common terms would create huge low-value cliques.
+                    if len(ids)>24:
+                        continue
+                    ordered=sorted(ids)
+                    for i,left in enumerate(ordered):
+                        for right in ordered[i+1:]:
+                            a,scope_a,_=items[left]
+                            b,scope_b,_=items[right]
+                            if a==b or (scope_a!=scope_b and
+                                        scope_a!="global" and scope_b!="global"):
+                                continue
+                            pair=(left,right)
+                            possible[pair]=possible.get(pair,0)+1
+                proposals=[]
+                for (left,right),common in possible.items():
+                    if common<2:
+                        continue
+                    a,_,terms_a=items[left]
+                    b,_,terms_b=items[right]
+                    # Posting caps can undercount very common tokens; that's
+                    # conservative but never invents evidence for a link.
+                    denominator=len(terms_a | terms_b)
+                    strength=common/denominator if denominator else 0
+                    if strength>=0.18:
+                        proposals.append((strength,common,left,right,a,b))
+                proposals.sort(key=lambda row:(-row[0],-row[1],row[2],row[3]))
+                conn.execute("DELETE FROM memory_cortex_edges")
+                per_item: dict[str,int]={}
+                stored=0
+                for strength,common,left,right,brain_a,brain_b in proposals:
+                    if stored>=900:
+                        break
+                    if per_item.get(left,0)>=8 or per_item.get(right,0)>=8:
+                        continue
+                    conn.execute(
+                        "INSERT INTO memory_cortex_edges VALUES(?,?,?,?,?,?,?)",
+                        (left,right,brain_a,brain_b,common,round(strength,4),stamp)
+                    )
+                    per_item[left]=per_item.get(left,0)+1
+                    per_item[right]=per_item.get(right,0)+1
+                    stored+=1
+        return {"cortexEdges":stored,"cortexScanned":len(rows)}
+
+    def cortex_status(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            n=conn.execute("SELECT COUNT(*) FROM memory_cortex_edges").fetchone()[0]
+            pairs=conn.execute(
+                "SELECT left_brain,right_brain FROM memory_cortex_edges"
+            ).fetchall()
+            benchmark=conn.execute(
+                "SELECT cases,baseline_hits,mesh_hits,evaluated_at "
+                "FROM memory_cortex_benchmarks WHERE id=1"
+            ).fetchone()
+        brains=set()
+        for pair in pairs:
+            brains.add(pair["left_brain"])
+            brains.add(pair["right_brain"])
+        return {
+            "roots":len(BRAINS),"edges":n,"connectedBrains":len(brains),
+            "brainPairs":len({tuple(sorted((r["left_brain"],r["right_brain"])))
+                              for r in pairs}),
+            "evaluation":{
+                "cases":benchmark["cases"],"baselineHits":benchmark["baseline_hits"],
+                "meshHits":benchmark["mesh_hits"],"evaluatedAt":benchmark["evaluated_at"]
+            }
+        }
+
+    def cortex_connections(self,item_id: str,conversation_id: str,
+                           cloud_mode: bool=False) -> list[dict]:
+        """Explain a cross-brain link using both live, consent-filtered sources."""
+        visible={r["id"]:r for r in
+                 self._visible_deep_rows(conversation_id,cloud_mode)}
+        if item_id not in visible:
+            return []
+        with closing(db.connection(self.path)) as conn:
+            edges=conn.execute(
+                "SELECT left_id,right_id,left_brain,right_brain,"
+                "shared_terms,strength FROM memory_cortex_edges "
+                "WHERE left_id=? OR right_id=? ORDER BY strength DESC LIMIT 12",
+                (item_id,item_id)
+            ).fetchall()
+        matches=[]
+        for edge in edges:
+            other=(edge["right_id"] if edge["left_id"]==item_id
+                   else edge["left_id"])
+            if other not in visible:
+                continue
+            matches.append({
+                "item":visible[other],"fromBrain":visible[item_id]["brain"],
+                "toBrain":visible[other]["brain"],
+                "sharedTerms":edge["shared_terms"],
+                "strength":edge["strength"],"relation":"shared_evidence"
+            })
+        return matches[:8]
+
+    def cortex_provenance(self,conversation_id: str,cloud_mode: bool=False) -> dict:
+        """Coverage of original evidence, not an invented probability of truth."""
+        items=self._visible_deep_rows(conversation_id,cloud_mode)
+        backed=sum(bool(item["sourceMessageId"]) for item in items)
+        # Conflicts are merely lexical opposite preference claims, not adjudicated.
+        preferences: dict[str,set[str]]={}
+        for item in items:
+            value=preference_topic(item["content"])
+            if value:
+                preferences.setdefault(value[0],set()).add(str(value[1]))
+        conflicts=sum(len(values)>1 for values in preferences.values())
+        return {"confirmed":len(items),"sourceBacked":backed,
+                "withoutMessageSource":len(items)-backed,
+                "potentialPreferenceConflicts":conflicts}
+
+    def evaluate_cortex(self) -> dict:
+        """Offline self-retrieval benchmark. Diagnostic only, never train on it.
+
+        Source-derived queries are not independent human relevance judgments;
+        report both baseline and mesh instead of claiming improved intelligence.
+        """
+        items=self._visible_deep_rows("main",False)[:120]
+        if len(items)<8:
+            result={"cases":0,"baselineHits":0,"meshHits":0}
+        else:
+            corpus=[(r["id"],r["brain"],_keywords(r["content"])) for r in items]
+            fixtures=[r for r in corpus if len(r[2])>=2][:32]
+            adjacency: dict[str,set[str]]={}
+            ids={r[0] for r in corpus}
+            with closing(db.connection(self.path)) as conn:
+                for link in conn.execute(
+                    "SELECT left_id,right_id FROM memory_cortex_edges LIMIT 900"
+                ):
+                    if link["left_id"] in ids and link["right_id"] in ids:
+                        adjacency.setdefault(link["left_id"],set()).add(link["right_id"])
+                        adjacency.setdefault(link["right_id"],set()).add(link["left_id"])
+            baseline=mesh=0
+            for expected,_,terms in fixtures:
+                query=set(sorted(terms)[:2])
+                ranked=sorted(corpus,key=lambda entry:(
+                    -len(query & entry[2]),entry[0]))
+                top3=[entry[0] for entry in ranked[:3]]
+                baseline+=int(expected in top3)
+                # Mesh may replace the weakest nonmatching baseline hit, but is
+                # never credited unless it retrieves the exact known source ID.
+                expanded=set(top3)
+                for seed in top3[:2]:
+                    expanded.update(adjacency.get(seed,set()))
+                candidates=sorted(
+                    (entry for entry in corpus if entry[0] in expanded),
+                    key=lambda entry:(
+                        -len(query & entry[2]),
+                        -int(any(entry[0] in adjacency.get(seed,set())
+                                 for seed in top3[:2])),entry[0])
+                )
+                mesh+=int(expected in {entry[0] for entry in candidates[:3]})
+            result={"cases":len(fixtures),"baselineHits":baseline,"meshHits":mesh}
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute(
+                    "UPDATE memory_cortex_benchmarks SET "
+                    "cases=?,baseline_hits=?,mesh_hits=?,evaluated_at=? WHERE id=1",
+                    (result["cases"],result["baselineHits"],result["meshHits"],now())
+                )
+        return result
+
     def deep_recall(self,query: str,conversation_id: str,cloud_mode: bool,
                     max_items: int=8) -> list[dict]:
         """Координатор 8 мозгов: lexical + relevant event state + bounded 2-hop graph."""
