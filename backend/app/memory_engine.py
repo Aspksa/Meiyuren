@@ -14,6 +14,7 @@ import httpx
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -162,6 +163,9 @@ class MemoryEngine:
 
     def __init__(self, path: Path):
         self.path = path
+        # Serializes the scheduled worker and explicit local process endpoint
+        # within this FastAPI instance; SQLite leases still cover other instances.
+        self._jobs_lock = threading.Lock()
 
     def initialize(self, backup_existing: bool = False) -> None:
         # Backup API читает консистентный снимок даже если WAL активен.
@@ -259,6 +263,8 @@ class MemoryEngine:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
                 if "auto_growth" not in policy_columns:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_growth INTEGER NOT NULL DEFAULT 1")
+                if "auto_evolution" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_evolution INTEGER NOT NULL DEFAULT 1")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
                     id TEXT PRIMARY KEY,
                     parent_id TEXT,
@@ -279,6 +285,34 @@ class MemoryEngine:
                     id INTEGER PRIMARY KEY CHECK(id=1), last_run INTEGER NOT NULL DEFAULT 0
                 )""")
                 conn.execute("INSERT OR IGNORE INTO memory_growth_maintenance(id) VALUES(1)")
+                # Local neuroevolution: resource-bounded generations, no model/code mutation.
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_evolution_state (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    generation INTEGER NOT NULL DEFAULT 0,
+                    active_strategy TEXT NOT NULL DEFAULT 'balanced',
+                    last_evaluated INTEGER NOT NULL DEFAULT 0,
+                    evaluations INTEGER NOT NULL DEFAULT 0
+                )""")
+                conn.execute("INSERT OR IGNORE INTO memory_evolution_state(id) VALUES(1)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_evolution_trials (
+                    generation INTEGER NOT NULL, strategy TEXT NOT NULL,
+                    benchmark_cases INTEGER NOT NULL, proxy_score REAL NOT NULL,
+                    selected INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                    PRIMARY KEY(generation,strategy)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_microbrains (
+                    id TEXT PRIMARY KEY, root_brain TEXT NOT NULL, branch_id TEXT NOT NULL,
+                    support INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_microbrain_branch ON memory_microbrains(branch_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_synaptic_weights (
+                    left_id TEXT NOT NULL, right_id TEXT NOT NULL,
+                    adjustment REAL NOT NULL DEFAULT 0,
+                    observations INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(left_id,right_id)
+                )""")
                 # Deep Memory v0.12: event state and bounded, content-free retrieval feedback.
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_events (
                     memory_id TEXT PRIMARY KEY, brain TEXT NOT NULL,
@@ -386,14 +420,16 @@ class MemoryEngine:
         # Подключаем старые подтверждённые факты к дереву при первом запуске v0.11.
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        if self.policy()["auto_evolution"]:
+            self.evolve()
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -466,6 +502,8 @@ class MemoryEngine:
                 if digest(old["content"])!=digest(content) or (old["cloud_allowed"] and not cloud_allowed):
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
                 conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
+                conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                             (item_id,item_id))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
@@ -511,6 +549,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                                 (target,target))
                     conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
                                  "WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
@@ -626,8 +666,14 @@ class MemoryEngine:
                         (str(uuid.uuid4()),user["id"],conversation_id,ts))
 
     def process_pending(self,limit: int=10) -> int:
-        """Один локальный worker обслуживает обучение, ветвление и периодическую очистку."""
-        if self.policy()["auto_growth"]:
+        """Worker и ручной запрос ждут одну и ту же очередь, без гонок."""
+        with self._jobs_lock:
+            return self._process_pending_locked(limit)
+
+    def _process_pending_locked(self,limit: int=10) -> int:
+        """Локальная обработка, обслуживаемая только одним worker за раз."""
+        policy=self.policy()
+        if policy["auto_growth"] or policy["auto_evolution"]:
             self.maintain()
         done=0
         for _ in range(min(limit,50)):
@@ -873,6 +919,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
                                  (item["id"],item["id"]))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item["id"],))
+                    conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                                 (item["id"],item["id"]))
                 conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
                              "WHERE item_id IN (SELECT id FROM memory_items WHERE conversation_id=?)",
                              (conversation_id,))
@@ -1083,9 +1131,128 @@ class MemoryEngine:
                     "DELETE FROM memory_summaries WHERE conversation_id NOT IN "
                     "(SELECT id FROM conversations)"
                 )
-        self.grow_branches()
+                conn.execute(
+                    "DELETE FROM memory_synaptic_weights WHERE "
+                    "left_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?)) OR "
+                    "right_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?))",(ts,ts)
+                )
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         self.rebuild_deep_index()
+        if self.policy()["auto_evolution"]:
+            self.evolve()
         return True
+
+    def evolution_status(self) -> dict:
+        """Small content-free status suitable for default UI."""
+        with closing(db.connection(self.path)) as conn:
+            state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+            micro=conn.execute("SELECT COUNT(*) FROM memory_microbrains").fetchone()[0]
+            synapses=conn.execute("SELECT COUNT(*) FROM memory_synaptic_weights").fetchone()[0]
+        return {"generation":state["generation"],"strategy":state["active_strategy"],
+                "evaluations":state["evaluations"],"lastEvaluated":state["last_evaluated"],
+                "microbrains":micro,"adaptiveSynapses":synapses,
+                "automatic":self.policy()["auto_evolution"]}
+
+    def _evolution_proxy(self,items: list[dict],strategy: str) -> float:
+        """Deterministic self-retrieval proxy; NOT real-world answer accuracy.
+
+        The query is derived from two lexically distinctive terms per item. We
+        measure whether that item's ID appears in top 3; never use raw messages
+        or submit a query to an external AI. Limit dataset and runtime.
+        """
+        if len(items)<12:
+            return 0.0
+        settings={
+            "balanced":(3.0,1.25,0.35),
+            "focused":(4.0,0.60,0.20),
+            "context":(2.50,2.00,0.45),
+        }
+        lexical,brain_bonus,feedback_bonus=settings[strategy]
+        fixtures=[]
+        for item in items:
+            stems=sorted(_keywords(item["content"]))
+            if len(stems)<2:
+                continue
+            fixtures.append((item["id"],set(stems[:2]),item["brain"]))
+        fixtures=fixtures[:80]
+        if len(fixtures)<12:
+            return 0.0
+        success=0
+        for golden_id,terms,brain in fixtures:
+            ranking=[]
+            for item in items:
+                common=len(terms & _keywords(item["content"]))
+                relevance=common*lexical
+                if item["brain"]==brain and common:
+                    relevance+=brain_bonus
+                relevance+=max(-2,min(2,item.get("helpful",0)-item.get("unhelpful",0)))*feedback_bonus
+                ranking.append((relevance,item["id"]))
+            ranking.sort(key=lambda pair:(-pair[0],pair[1]))
+            if golden_id in {item_id for _,item_id in ranking[:3]}:
+                success+=1
+        return round(success / len(fixtures),4)
+
+    def evolve(self,force: bool=False) -> dict:
+        """Offline bounded strategy benchmark, promote only measured improvement.
+
+        Never edits source code, model weights, user facts, cloud permissions,
+        historical chats or operational settings. No network or AI inference.
+        """
+        if not self.policy()["auto_evolution"] and not force:
+            return self.evolution_status()
+        stamp=now()
+        with closing(db.connection(self.path)) as conn:
+            state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+            if not force and stamp-state["last_evaluated"]<30*60*1000:
+                return self.evolution_status()
+        rows=self._visible_deep_rows("main",False)
+        # Global and main facts are enough for bounded offline proxy benchmark.
+        samples=rows[:120]
+        options=("balanced","focused","context")
+        scores={name:self._evolution_proxy(samples,name) for name in options}
+        fixture_count=sum(1 for item in samples if len(_keywords(item["content"]))>=2)
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                state=conn.execute("SELECT * FROM memory_evolution_state WHERE id=1").fetchone()
+                if not force and stamp-state["last_evaluated"]<30*60*1000:
+                    return self.evolution_status()
+                current=state["active_strategy"]
+                winner=current
+                # Require enough fixtures and a clear improvement. Tie => keep old.
+                if fixture_count>=12:
+                    challenger=max(options,key=lambda name:(scores[name],-options.index(name)))
+                    if scores[challenger]>=scores[current]+0.05:
+                        winner=challenger
+                generation=state["generation"]+1
+                conn.executemany(
+                    "INSERT INTO memory_evolution_trials VALUES(?,?,?,?,?,?)",
+                    [(generation,name,min(fixture_count,80),scores[name],
+                      int(name==winner),stamp) for name in options]
+                )
+                conn.execute(
+                    "UPDATE memory_evolution_state SET generation=?,active_strategy=?,"
+                    "last_evaluated=?,evaluations=evaluations+1 WHERE id=1",
+                    (generation,winner,stamp)
+                )
+                # Keep bounded content-free history.
+                conn.execute(
+                    "DELETE FROM memory_evolution_trials WHERE generation<?",
+                    (generation-39,)
+                )
+        return self.evolution_status()
+
+    def reset_evolution(self) -> dict:
+        """Safe rollback to known default; leaves factual memory untouched."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute(
+                    "UPDATE memory_evolution_state SET active_strategy='balanced' WHERE id=1"
+                )
+        return self.evolution_status()
 
     def grow_branches(self) -> dict:
         """Полностью локальное саморазвитие дерева памяти по повторяющимся темам.
@@ -1173,7 +1340,19 @@ class MemoryEngine:
 
                 for brain in BRAINS:
                     expand(brain,brain,set(datasets[brain]),frozenset(),1)
-        return {"branches":nodes_created,"roots":len(BRAINS),"scanned":len(rows)}
+                # Every mature nested topic is a lightweight specialization, not an LLM.
+                candidates=conn.execute(
+                    "SELECT id,root_brain,support FROM memory_branches "
+                    "WHERE depth>=2 AND support>=3 ORDER BY support DESC,id LIMIT 96"
+                ).fetchall()
+                conn.execute("DELETE FROM memory_microbrains")
+                conn.executemany(
+                    "INSERT INTO memory_microbrains VALUES(?,?,?,?,?,?)",
+                    [(r["id"],r["root_brain"],r["id"],r["support"],stamp,stamp)
+                     for r in candidates]
+                )
+        return {"branches":nodes_created,"roots":len(BRAINS),
+                "scanned":len(rows),"microbrains":len(candidates)}
 
     def branch_tree(self) -> dict:
         with closing(db.connection(self.path)) as conn:
@@ -1746,19 +1925,27 @@ class MemoryEngine:
                 point["memoryId"] for point in
                 self.episode_overview(conversation_id,cloud_mode)["continuation"]
             }
+        strategy=self.evolution_status()["strategy"]
+        strategy_weights={
+            "balanced":(3.0,1.25,0.35),
+            "focused":(4.0,0.60,0.20),
+            "context":(2.50,2.00,0.45),
+        }
+        word_weight,route_weight,feedback_weight=strategy_weights.get(
+            strategy,strategy_weights["balanced"])
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
-            relevance=shared*3.0+(2.0 if row["id"] in base else 0)
+            relevance=shared*word_weight+(2.0 if row["id"] in base else 0)
             if row["brain"] in routed and shared:
-                relevance+=1.25
+                relevance+=route_weight
             if continue_mode and row["brain"] in ("projects","goals","decisions"):
                 relevance+=1.1
                 if row["id"] in checkpoint_ids:
                     relevance+=3.8
                 if row["eventState"]=="completed":
                     relevance-=2.5
-            relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*0.35
+            relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*feedback_weight
             if relevance<=0:
                 continue
             scored.append((relevance,row["updatedAt"],row))
@@ -1775,8 +1962,11 @@ class MemoryEngine:
                 next_frontier=[]
                 for seed in frontier[:12]:
                     neighbors=conn.execute(
-                        "SELECT CASE WHEN left_id=? THEN right_id ELSE left_id END AS neighbor,"
-                        "weight FROM memory_links WHERE left_id=? OR right_id=? "
+                        "SELECT CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END AS neighbor,"
+                        "MAX(0,MIN(1,l.weight+COALESCE(s.adjustment,0))) AS weight "
+                        "FROM memory_links l LEFT JOIN memory_synaptic_weights s "
+                        "ON s.left_id=l.left_id AND s.right_id=l.right_id "
+                        "WHERE l.left_id=? OR l.right_id=? "
                         "ORDER BY weight DESC LIMIT 10",(seed,seed,seed)
                     ).fetchall()
                     for link in neighbors:
@@ -1845,6 +2035,28 @@ class MemoryEngine:
                     (item_id,int(helpful),int(not helpful),now())
                 )
                 r=conn.execute("SELECT * FROM memory_deep_feedback WHERE memory_id=?",(item_id,)).fetchone()
+                # Only explicit user feedback adjusts synapses. Automatically selected
+                # memories are NOT assumed correct merely because they were retrieved.
+                edges=conn.execute(
+                    "SELECT left_id,right_id FROM memory_links "
+                    "WHERE left_id=? OR right_id=? LIMIT 12",(item_id,item_id)
+                ).fetchall()
+                for edge in edges:
+                    pair=tuple(sorted((edge["left_id"],edge["right_id"])))
+                    old=conn.execute(
+                        "SELECT adjustment,observations FROM memory_synaptic_weights "
+                        "WHERE left_id=? AND right_id=?",pair
+                    ).fetchone()
+                    adjustment=max(-0.4,min(0.4,
+                        (old["adjustment"] if old else 0)+(0.04 if helpful else -0.04)))
+                    conn.execute(
+                        "INSERT INTO memory_synaptic_weights VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(left_id,right_id) DO UPDATE SET "
+                        "adjustment=excluded.adjustment,observations=excluded.observations,"
+                        "updated_at=excluded.updated_at",
+                        (pair[0],pair[1],round(adjustment,3),
+                         (old["observations"] if old else 0)+1,now())
+                    )
         return {"memoryId":item_id,"helpful":r["helpful"],"unhelpful":r["unhelpful"]}
 
     def deep_metrics(self) -> dict:
@@ -1880,4 +2092,4 @@ class MemoryEngine:
             branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
                     policy=self.policy(),network=self.brains(),autonomousBranches=branches,
-                    deep=self.deep_metrics())
+                    deep=self.deep_metrics(),evolution=self.evolution_status())

@@ -18,3 +18,7 @@
 
 .memory-core__explanation details{margin:6px 0}
 .memory-core__explanation details>p{overflow-wrap:anywhere;font-size:11px;margin:4px 0}
+
+.memory-core__advanced,.setting-advanced,.cloud-settings__advanced{margin:12px 0;border:1px solid rgba(210,170,114,.32);border-radius:9px;padding:9px}
+.memory-core__advanced>summary,.setting-advanced>summary,.cloud-settings__advanced>summary{cursor:pointer;font-size:12px;color:#e9cea8;line-height:1.5}
+.memory-core__advanced[open]>summary,.setting-advanced[open]>summary,.cloud-settings__advanced[open]>summary{margin-bottom:10px}

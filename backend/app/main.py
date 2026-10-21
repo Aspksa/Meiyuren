@@ -54,6 +54,7 @@ class MemoryPolicyInput(BaseModel):
     auto_summaries: bool | None = None
     allow_cloud_embeddings: bool | None = None
     auto_growth: bool | None = None
+    auto_evolution: bool | None = None
 
 
 class MemoryReviewInput(BaseModel):
@@ -129,7 +130,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.13.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.14.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -485,6 +486,19 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.delete("/api/memory/neural/vectors")
     def clear_neural_vectors():
         return {"deleted":engine.delete_vectors()}
+
+    @app.get("/api/memory/evolution")
+    def memory_evolution():
+        return engine.evolution_status()
+
+    @app.post("/api/memory/evolution/reset")
+    def reset_memory_evolution():
+        return engine.reset_evolution()
+
+    @app.post("/api/memory/evolution/evaluate")
+    def evaluate_memory_evolution():
+        # A single local bounded replay; zero network calls.
+        return engine.evolve(force=True)
 
     @app.get("/api/memory/status")
     def memory_status():

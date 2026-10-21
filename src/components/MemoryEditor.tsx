@@ -8,6 +8,7 @@ import {
   rebuildMemoryBrainLinks, getMemoryTree, getDeepMemoryOverview, getDeepMemoryMetrics,
   rebuildDeepMemoryIndex, sendDeepMemoryFeedback,
   getEpisodicMemoryOverview, rebuildEpisodicMemory,
+  resetMemoryEvolution, evaluateMemoryEvolution,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
@@ -256,6 +257,9 @@ export function MemoryEditor({ active }: { active: boolean }) {
           <span>Связей: {status.network.links}</span>
           <span>Нейровекторов: {status.network.neuralVectors}</span>
           <span>Автономных ветвей: {status.autonomousBranches}</span>
+          <span>Микромозгов: {status.evolution.microbrains}</span>
+          <span>Синапсов: {status.evolution.adaptiveSynapses}</span>
+          <span>Эволюция: поколение {status.evolution.generation}</span>
         </div>
         <h4>Восемь связанных мозгов долгосрочной памяти</h4>
         <div className="memory-core__brains">
@@ -265,6 +269,26 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>)}
         </div>
       </>}
+      <p>Локальная память развивается автоматически, пока запущен Meiyuren.
+        Платные запросы Cloud.ru и изменение кода без разрешения не запускаются.</p>
+      <details className="memory-core__advanced">
+        <summary>Дополнительные настройки и ручное управление памятью</summary>
+        {status && <section className="memory-core__explanation">
+          <h4>Локальная нейроэволюция</h4>
+          <p>Стратегия: {status.evolution.strategy}. Проведено проверок: {status.evolution.evaluations}.
+            Оценка выполняется на локальных синтетических заданиях; это не проверка
+            истинности воспоминаний и не обучение весов LLM.</p>
+          <div className="memory-core__actions">
+            <button type="button" disabled={busy} onClick={() => void action(async () => {
+              const result = await evaluateMemoryEvolution();
+              return 'Проверено поколение ' + result.generation + ' (без Cloud.ru).';
+            })}>Проверить стратегии локально</button>
+            <button type="button" disabled={busy} onClick={() => void action(async () => {
+              await resetMemoryEvolution();
+              return 'Стратегия поиска возвращена к безопасному исходному варианту.';
+            })}>Откатить стратегию поиска</button>
+          </div>
+        </section>}
       {episodes && <section className="memory-core__explanation" aria-label="Эпизодическая память">
         <h4>Эпизодическая память v0.13</h4>
         <p>Эпизоды сгруппированы по датам записи в UTC. Если в факте есть явная дата события,
@@ -413,6 +437,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         ['allow_cloud_facts', 'Разрешить передачу одобренных фактов Cloud.ru'],
         ['auto_extract', 'Автоматически анализировать новые реплики (локально)'],
         ['auto_growth', 'Самостоятельно запоминать безопасные факты и выращивать ветви'],
+        ['auto_evolution', 'Автоматически развивать специализации и проверять стратегии локально'],
         ['auto_summaries', 'Автоматически создавать выписки (локально)'],
         ['allow_cloud_embeddings', 'Разрешить ручную нейроиндексацию через Cloud.ru (может быть платной)'],
       ] as const).map(([key, caption]) =>
@@ -578,6 +603,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         </li>)}
       </ul>
       <button type="button" disabled={busy} onClick={() => void eraseHistory()}>Очистить основной диалог</button>
+      </details>
       {error && <p className="memory-editor__error" role="alert">{error}</p>}
       {message && <p className="memory-editor__success" role="status">{message}</p>}
     </section>

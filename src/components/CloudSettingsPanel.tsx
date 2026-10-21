@@ -159,6 +159,11 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
           <strong>{enabled ? 'Облако активно' : 'Демо-режим'}</strong>
         </div>
 
+        {hasKey && enabled && <p className="cloud-settings__hint">
+          Подключение настроено. Чат и автономная локальная память работают без ручного запуска обслуживания.
+        </p>}
+        <details className="cloud-settings__advanced" open={!hasKey || !enabled}>
+          <summary>{hasKey && enabled ? 'Дополнительные настройки подключения' : 'Подключить Cloud.ru'}</summary>
         <label className="cloud-settings__label" htmlFor="meiyuren-cloud-key">API-ключ Cloud.ru</label>
         <input id="meiyuren-cloud-key" className="cloud-settings__input" type="password" autoComplete="off"
           spellCheck={false} value={keyInput} placeholder={hasKey ? 'Введите новый ключ для замены' : 'Введите Key Secret'}
@@ -209,6 +214,7 @@ export function CloudSettingsPanel({ open, onClose }: { open: boolean; onClose: 
           <p>Моделей: {diagnostics.modelsCount} · Задержка: {diagnostics.latencyMs ?? '—'} мс</p>
         </div>}
         {testAnswer && <p className="cloud-settings__success">Ответ теста: {testAnswer}</p>}
+        </details>
         {error && <p className="cloud-settings__error" role="alert">{error}</p>}
         {message && <p className="cloud-settings__success" role="status">{message}</p>}
         <div className="cloud-settings__footer">
