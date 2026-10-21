@@ -707,6 +707,8 @@ class MemoryEngine:
                              (str(uuid.uuid4()),item_id,revision+1,"edited",content,now()))
                 if digest(old["content"])!=digest(content) or (old["cloud_allowed"] and not cloud_allowed):
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
+                if digest(old["content"])!=digest(content):
+                    self._drop_derived(conn,item_id)  # граф и смысл пересчитаются по новому тексту
                 conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
                 conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
                              (item_id,item_id))

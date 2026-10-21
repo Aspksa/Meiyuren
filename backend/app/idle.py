@@ -58,12 +58,24 @@ class IdleRuntime:
             last = conn.execute(
                 "SELECT * FROM idle_runs ORDER BY started_at DESC LIMIT 1").fetchone()
         idle_for = now() - self.last_activity()
+        download = self._model_download()
         return {
             "idleAfterMs": IDLE_AFTER, "runEveryMs": RUN_EVERY,
             "idleForMs": max(0, idle_for), "isIdle": idle_for >= IDLE_AFTER,
             "lastRun": self._run(last) if last else None,
-            "externalCalls": False,
+            # Единственный выход в сеть — разовое скачивание модели смысла.
+            "externalCalls": download == "downloading",
+            "modelDownload": download,
         }
+
+    def _model_download(self) -> str:
+        """off — не нужно; pending — скачается в простое; downloading — идёт; done — на диске."""
+        model = semantic.model_for(self.path)
+        if model.ready or model.downloaded():
+            return "done"
+        if not self.engine.policy()["semantic_model"] or semantic.TextEmbedding is None:
+            return "off"
+        return "downloading" if model.state == "downloading" else "pending"
 
     @staticmethod
     def _run(row) -> dict:

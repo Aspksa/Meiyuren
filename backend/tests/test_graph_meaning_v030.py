@@ -129,3 +129,24 @@ def test_semantic_status_without_model(app):
     assert status["model"] == semantic.MODEL
     assert status["enabled"] is True
     assert status["state"] != "ready"
+
+
+def test_edit_drops_old_entity_links_immediately(app):
+    client, path = app
+    say(client, "Мой брат Петя учится на юриста")
+    client.get("/api/memory/entities")
+    fact = client.get("/api/memory/facts").json()["facts"][0]
+    edited = client.put("/api/memory/facts/" + fact["id"],
+                          json={"content": "Я люблю зелёный чай", "revision": fact["revision"]})
+    assert edited.status_code == 200, edited.text
+    with closing(db.connection(path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_entity_mentions").fetchone()[0] == 0
+    recalled = client.get("/api/memory/recall", params={"q": "Что ты знаешь про Петю?"}).json()
+    assert "зелёный чай" not in recalled["context"]
+
+
+def test_idle_status_reports_model_download(app):
+    client, _ = app
+    status = client.get("/api/idle/status").json()
+    assert status["modelDownload"] in {"off", "pending", "done"}
+    assert status["externalCalls"] is False

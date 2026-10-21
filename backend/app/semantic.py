@@ -77,8 +77,11 @@ class SemanticModel:
     def encode(self, texts: list[str]) -> list[list[float]]:
         if self._model is None:
             raise RuntimeError("model not loaded")
-        with self._lock:
-            vectors = list(self._model.embed(texts, batch_size=32))
+        vectors = []
+        # Замок берётся на маленькую пачку: вопрос из чата не ждёт всю индексацию простоя.
+        for start in range(0, len(texts), 8):
+            with self._lock:
+                vectors.extend(self._model.embed(texts[start:start + 8], batch_size=8))
         return [normalize([float(x) for x in v]) for v in vectors]
 
     def status(self) -> dict:
