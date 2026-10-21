@@ -666,6 +666,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     def rebuild_brain_links():
         return {"links":engine.rebuild_links()}
 
+    @app.get("/api/memory/universe/graph")
+    def universe_graph(limit: int = Query(default=180,ge=1,le=300)):
+        return engine.neural_universe_graph(limit)
+
     @app.get("/api/memory/brains")
     def memory_brains():
         return engine.brains()

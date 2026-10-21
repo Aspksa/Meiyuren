@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import './NeuralUniverse.css';
 
+type Graph = { nodes: {id:string;brain:string;createdAt:number}[]; edges:{source:string;target:string;relation:string;weight:number}[]; events:{kind:string;nodeId:string;action:string;timestamp:number}[]; truncated:boolean };
 const BRAINS = [
   ['identity', 'Личность'], ['episodes', 'События'], ['goals', 'Цели'],
   ['habits', 'Привычки'], ['knowledge', 'Знания'], ['relationships', 'Отношения'],
@@ -17,6 +18,8 @@ const initial = BRAINS.reduce((acc, [key]) => ({ ...acc, [key]: 0 }), {} as Reco
 export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState('');
+  const [graph, setGraph] = useState<Graph | null>(null);
+  const [mode, setMode] = useState<'universe'|'synapses'|'evolution'|'activity'>('universe');
   const [selected, setSelected] = useState<BrainId>('projects');
   useEffect(() => {
     if (!open) return;
@@ -26,7 +29,10 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
         const response = await fetch('/api/memory/status', { signal: controller.signal });
         if (!response.ok) throw new Error(`Backend: HTTP ${response.status}`);
         const result = await response.json() as Status;
-        if (!controller.signal.aborted) { setStatus(result); setError(''); }
+        const graphResponse = await fetch('/api/memory/universe/graph?limit=180', { signal: controller.signal });
+        if (!graphResponse.ok) throw new Error(`Graph API: HTTP ${graphResponse.status}`);
+        const graphData = await graphResponse.json() as Graph;
+        if (!controller.signal.aborted) { setStatus(result); setGraph(graphData); setError(''); }
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Нет связи с backend');
       }
@@ -57,7 +63,13 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
       ].map(([label, value]) => <div className="neural-universe__metric" key={label}><span>{label}</span><strong>{status ? value : '—'}</strong></div>)}
     </div>
     {error && <p className="neural-universe__error" role="alert">{error}. Показаны последние полученные данные.</p>}
-    <div className="neural-universe__body">
+    <div className="neural-universe__tabs" role="tablist" aria-label="Режим нейросети">
+      {([['universe','Вселенная'],['synapses','Синапсы'],['evolution','Эволюция'],['activity','Активность']] as const).map(([id,label])=><button key={id} role="tab" aria-selected={mode===id} className={mode===id?'is-active':''} onClick={()=>setMode(id)}>{label}</button>)}
+    </div>
+    {mode==='synapses' && <div className="neural-universe__ledger"><h3>Подтверждённые связи ({graph?.edges.length ?? 0})</h3>{graph?.edges.length ? graph.edges.slice(0,35).map((edge,index)=><p key={index}>{edge.source.slice(0,8)} ↔ {edge.target.slice(0,8)} · {edge.relation} · вес {edge.weight.toFixed(2)}</p>):<p>Подтверждённых связей пока нет.</p>}</div>}
+    {mode==='evolution' && <div className="neural-universe__ledger"><h3>История изменения памяти</h3>{graph?.events.filter(e=>e.kind==='revision').length ? graph.events.filter(e=>e.kind==='revision').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · {e.action} · узел {e.nodeId.slice(0,8)}</p>):<p>История изменений пока отсутствует.</p>}</div>}
+    {mode==='activity' && <div className="neural-universe__ledger"><h3>Подтверждённые обращения к памяти</h3>{graph?.events.filter(e=>e.kind==='recall').length ? graph.events.filter(e=>e.kind==='recall').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · извлечён узел {e.nodeId.slice(0,8)}</p>):<p>Журнал обращений пока пуст. Внутренние мысли модели не регистрируются.</p>}</div>}
+    {mode==='universe' && <div className="neural-universe__body">
       <div className="neural-universe__map">
         <svg viewBox="0 0 600 490" role="img" aria-label="Восемь мозгов и количество подтверждённых фактов в каждом">
           <defs>
@@ -83,6 +95,7 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
             </g>;
           })}
         </svg>
+        {graph && <p>В графе отображено {graph.nodes.length} фактических узлов и {graph.edges.length} связей.{graph.truncated ? ' Показана ограниченная выборка.' : ''}</p>}
         <p>Пунктирные линии — схема расположения, <strong>не подтверждённые синапсы</strong>. Размер узла отражает количество фактов.</p>
       </div>
       <aside className="neural-universe__detail">
@@ -95,6 +108,6 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
         <p>Ожидают обработки: {status?.jobs ?? '—'} задач. Ожидают подтверждения: {status?.pending ?? '—'}.</p>
         <p className="neural-universe__note">Визуализация использует фактические счётчики SQLite. Проценты интеллекта, имитация синапсов и фиктивный рост не отображаются.</p>
       </aside>
-    </div>
+    </div>}
   </section>;
 }
