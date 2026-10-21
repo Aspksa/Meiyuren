@@ -188,3 +188,37 @@ def test_neural_search_secrets_and_cross_site_mutation_blocked(app):
         "itemId":"not-real","requestId":str(uuid.uuid4())
     },headers={"X-Meiyuren-Client":""})
     assert cross_site.status_code==403
+
+
+
+def test_migration_backfills_old_legacy_memories_and_links(tmp_path):
+    from backend.app import history
+    path=tmp_path/"older.sqlite3"
+    db.initialise(path)
+    history.initialise(path)
+    history.add_fact(path,"Изучаю Python")
+    history.add_fact(path,"Каждый день изучаю Python")
+    with TestClient(create_app(path)) as client:
+        data=client.get("/api/memory/brains").json()
+        assert data["brains"]["knowledge"]==1
+        assert data["brains"]["habits"]==1
+        assert data["links"]>=1
+        fact=client.get("/api/memory/facts").json()["facts"][0]
+        assert fact["cloudAllowed"] is False
+        assert fact["kind"]=="legacy"
+
+
+def test_manual_rebuild_restores_local_links_without_cloud(app,monkeypatch):
+    client,path=app
+    manual(app,"Изучаю Python")
+    manual(app,"Каждый день изучаю Python")
+    with closing(db.connection(path)) as conn:
+        with conn:
+            conn.execute("DELETE FROM memory_links")
+    async def deny_paid(self,url,**kwargs):
+        raise AssertionError("Never call Cloud for rebuilding local brain links")
+    monkeypatch.setattr(httpx.AsyncClient,"post",deny_paid)
+    result=client.post("/api/memory/brains/rebuild")
+    assert result.status_code==200
+    assert result.json()["links"]>=1
+    assert client.get("/api/memory/brains").json()["links"]>=1
