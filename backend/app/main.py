@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from . import cloud, db, history
 from .memory_engine import MemoryEngine, SECRET
+from .evolution_runtime import EvolutionRuntime
 from .replies import generate_reply
 
 
@@ -106,6 +107,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     db.initialise(database)
     history.initialise(database)
     engine = MemoryEngine(database)
+    evolution = EvolutionRuntime(database.with_name('cognitive_evolution.sqlite3'))
     engine.initialize(backup_existing=False)
 
     @asynccontextmanager
@@ -116,6 +118,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             while not stop.is_set():
                 try:
                     await asyncio.to_thread(engine.process_pending, 8)
+                    await asyncio.to_thread(evolution.tick)
                 except Exception:
                     logging.getLogger(__name__).exception("Memory worker: локальная задача завершилась с ошибкой")
                 try:
@@ -130,13 +133,13 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.15.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.17.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
     async def protect_cloud_settings(request: Request, call_next):
-        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory", "/api/conversations"))
+        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory", "/api/conversations", "/api/evolution"))
         if protected_path and request.method not in ("GET", "HEAD", "OPTIONS"):
             # Для всех изменений нужен нестандартный заголовок и проверка Origin.
             # Сторонний веб-сайт не может отправить этот заголовок без CORS-разрешения.
@@ -166,6 +169,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.exception_handler(history.StaleConversation)
     async def stale_chat_handler(_request: Request, error: history.StaleConversation):
         return JSONResponse({"detail": str(error)}, status_code=409)
+
+    @app.get("/api/evolution/status")
+    def evolution_runtime_status():
+        return evolution.status()
+
+    @app.post("/api/evolution/evaluate")
+    def evolution_runtime_evaluate():
+        return evolution.tick(manual=True)
+
+    @app.post("/api/evolution/automatic")
+    def evolution_runtime_policy(enabled: bool = Query(...)):
+        return evolution.set_enabled(enabled)
 
     @app.get("/api/health")
     def health() -> dict:
