@@ -14,6 +14,7 @@ import httpx
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 import uuid
 
@@ -162,6 +163,9 @@ class MemoryEngine:
 
     def __init__(self, path: Path):
         self.path = path
+        # Serializes the scheduled worker and explicit local process endpoint
+        # within this FastAPI instance; SQLite leases still cover other instances.
+        self._jobs_lock = threading.Lock()
 
     def initialize(self, backup_existing: bool = False) -> None:
         # Backup API читает консистентный снимок даже если WAL активен.
@@ -662,7 +666,12 @@ class MemoryEngine:
                         (str(uuid.uuid4()),user["id"],conversation_id,ts))
 
     def process_pending(self,limit: int=10) -> int:
-        """Один локальный worker обслуживает обучение, ветвление и периодическую очистку."""
+        """Worker и ручной запрос ждут одну и ту же очередь, без гонок."""
+        with self._jobs_lock:
+            return self._process_pending_locked(limit)
+
+    def _process_pending_locked(self,limit: int=10) -> int:
+        """Локальная обработка, обслуживаемая только одним worker за раз."""
         policy=self.policy()
         if policy["auto_growth"] or policy["auto_evolution"]:
             self.maintain()
