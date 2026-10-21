@@ -9,6 +9,7 @@ import {
   rebuildDeepMemoryIndex, sendDeepMemoryFeedback,
   getEpisodicMemoryOverview, rebuildEpisodicMemory,
   resetMemoryEvolution, evaluateMemoryEvolution, getCortexMesh, evaluateCortexMesh,
+  getCloudBrains, setCloudBrains,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
@@ -50,6 +51,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [recallCloud, setRecallCloud] = useState(true);
   const [recallResult, setRecallResult] = useState<MemoryRecallPreview | null>(null);
   const [usage, setUsage] = useState<MemoryUsage[]>([]);
+  const [cloudBrains, setCloudBrainsState] = useState<Record<MemoryBrain, boolean> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -64,6 +66,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
     setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
     setNotes(n); setFacts(f); setCandidates(c); setSummaries(s);
     setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
+    setCloudBrainsState((await getCloudBrains()).brains);
   }
 
   useEffect(() => {
@@ -80,6 +83,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
         setCortexEvidence(cortex.provenance);
       }
+      return getCloudBrains().then(state => { if (mounted) setCloudBrainsState(state.brains); });
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
     });
@@ -301,8 +305,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
           })}>Повторить локальную проверку Cortex</button>
           <h4>Локальная нейроэволюция</h4>
           <p>Стратегия: {status.evolution.strategy}. Проведено проверок: {status.evolution.evaluations}.
-            Оценка выполняется на локальных синтетических заданиях; это не проверка
-            истинности воспоминаний и не обучение весов LLM.</p>
+            {status.evolution.benchmark === 'feedback'
+              ? ' Стратегии сравниваются на ваших реальных вопросах и воспоминаниях, отмеченных 👍 в чате'
+                + ' (оценок: ' + (status.evolution.feedbackCases ?? 0) + ').'
+              : ' Пока оценок мало (' + (status.evolution.feedbackCases ?? 0) + ' из 6), используется'
+                + ' запасная синтетическая проверка. Отмечайте 👍 полезные воспоминания под ответами в чате.'}
+            {' '}Это не обучение весов LLM.</p>
           <div className="memory-core__actions">
             <button type="button" disabled={busy} onClick={() => void action(async () => {
               const result = await evaluateMemoryEvolution();
@@ -471,6 +479,22 @@ export function MemoryEditor({ active }: { active: boolean }) {
             onChange={event => void updatePolicy(key, event.target.checked)} />
           <span>{caption}</span>
         </label>)}
+      {policy?.allow_cloud_facts && cloudBrains && <>
+        <p>Автоматически выученные факты из отмеченных областей передаются Cloud.ru без поштучного
+          подтверждения. Личные данные (телефоны, адреса, здоровье, финансы) не передаются никогда.</p>
+        {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(brain =>
+          <label className="memory-core__toggle" key={'cloud-' + brain}>
+            <input type="checkbox" checked={cloudBrains[brain]} disabled={busy}
+              onChange={event => {
+                const allowed = event.target.checked;
+                void action(async () => {
+                  setCloudBrainsState((await setCloudBrains({ [brain]: allowed })).brains);
+                  return 'Область «' + BRAIN_NAMES[brain] + '» ' + (allowed ? 'доступна' : 'закрыта') + ' для Cloud.ru.';
+                });
+              }} />
+            <span>Cloud.ru: {BRAIN_NAMES[brain]}</span>
+          </label>)}
+      </>}
 
       <h4>Заметка пользователя</h4>
       <textarea aria-label="Заметка памяти" rows={3} maxLength={4000} value={notes}

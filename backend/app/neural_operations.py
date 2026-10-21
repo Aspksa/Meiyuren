@@ -30,7 +30,7 @@ class NeuralOperations:
                 AND (i.expires_at IS NULL OR i.expires_at>?)
                 AND i.source_message_id IS NOT NULL
                 AND EXISTS (SELECT 1 FROM messages m WHERE m.id=i.source_message_id)
-                """, (int(time.time()),)).fetchall()
+                """, (int(time.time()*1000),)).fetchall()  # expires_at в миллисекундах
         return {r["id"] for r in rows}
 
     def status(self) -> dict:

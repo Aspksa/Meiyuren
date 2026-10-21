@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { consumeSSE } from './chatApi';
+import { consumeSSE, StreamError } from './chatApi';
 
 function streamParts(parts: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -33,5 +33,23 @@ describe('SSE protocol Cloud.ru', () => {
   it('не выдаёт неполный ответ за сохранённый', async () => {
     await expect(consumeSSE(streamParts(['event: delta\ndata: {"text":"Часть"}\n\n']), () => undefined))
       .rejects.toThrow('без подтверждения');
+  });
+
+  it('передаёт режим, признак оплаты и сохранённую часть ответа', async () => {
+    const saved = '{"user":{"id":"u"},"assistant":{"id":"a","text":"Часть [прервано]"},"interrupted":true}';
+    const error = await consumeSSE(streamParts([
+      'event: delta\ndata: {"text":"Часть"}\n\n',
+      'event: error\ndata: {"message":"Обрыв","mode":"cloud","paid":true,"saved":' + saved + '}\n\n',
+    ]), () => undefined).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(StreamError);
+    expect((error as StreamError).mode).toBe('cloud');
+    expect((error as StreamError).saved?.assistant.id).toBe('a');
+  });
+
+  it('в демо-режиме ошибка не считается платной', async () => {
+    const error = await consumeSSE(streamParts(['event: error\ndata: {"message":"Сбой","mode":"demo","paid":false}\n\n']),
+      () => undefined).catch((cause: unknown) => cause);
+    expect((error as StreamError).paid).toBe(false);
+    expect((error as StreamError).saved).toBeNull();
   });
 });

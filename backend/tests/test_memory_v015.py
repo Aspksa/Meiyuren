@@ -101,7 +101,7 @@ def test_cortex_acl_blocks_private_items_and_disabled_cloud(app):
     }).json()["context"]
 
 
-def test_cortex_no_scope_links_across_unrelated_conversations(app):
+def test_user_facts_are_shared_but_episodes_stay_in_their_conversation(app):
     client,path=app
     one=client.post("/api/conversations",json={"title":"Одна работа"})
     two=client.post("/api/conversations",json={"title":"Другая работа"})
@@ -109,16 +109,20 @@ def test_cortex_no_scope_links_across_unrelated_conversations(app):
     a=one.json()["id"];b=two.json()["id"]
     say(client,"Я разрабатываю проект Meiyuren Python",a)
     say(client,"Я изучаю проект Meiyuren Python",b)
-    with closing(db.connection(path)) as conn:
-        raw=conn.execute("SELECT * FROM memory_cortex_edges").fetchall()
-    assert raw==[]
-    assert client.get("/api/memory/cortex",params={"conversationId":a}).json()["provenance"]["confirmed"]==1
-    assert client.get("/api/memory/cortex",params={"conversationId":b}).json()["provenance"]["confirmed"]==1
-    ids=[r["id"] for r in client.get("/api/memory/facts").json()["facts"]]
-    assert len(ids)==2
-    assert client.get("/api/memory/cortex/facts/"+ids[0]+"/connections",params={
+    # Долговременные факты о пользователе доступны во всех диалогах.
+    assert client.get("/api/memory/cortex",params={"conversationId":a}).json()["provenance"]["confirmed"]==2
+    assert client.get("/api/memory/cortex",params={"conversationId":b}).json()["provenance"]["confirmed"]==2
+    say(client,"Запомни: вчера ездил на рыбалку с удочкой",a)
+    episode=next(f for f in client.get("/api/memory/facts").json()["facts"] if "рыбалку" in f["content"])
+    assert episode["brain"]=="episodes" and episode["conversationId"]==a
+    assert client.get("/api/memory/cortex",params={"conversationId":b}).json()["provenance"]["confirmed"]==2
+    assert client.get("/api/memory/cortex/facts/"+episode["id"]+"/connections",params={
         "conversationId":b
     }).json()["connections"]==[]
+    # Очистка диалога удаляет выученное из него, включая global-факты.
+    assert client.delete("/api/chat/messages",params={"conversationId":a}).status_code==200
+    left=[f["content"] for f in client.get("/api/memory/facts").json()["facts"]]
+    assert left==["Я изучаю проект Meiyuren Python"]
 
 
 def test_evidence_coverage_separates_confirmed_fact_from_available_message_source(app):

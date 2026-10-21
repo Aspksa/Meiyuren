@@ -149,7 +149,7 @@ def test_cloud_chat_payload_is_bounded_and_truncation_is_explained(client, monke
     assert "ограничением длины" in answer
     assert captured["max_tokens"] >= 1000
     assert sum(len(x["content"]) for x in captured["messages"][1:-1]) <= cloud.MAX_CONTEXT_CHARS
-    assert len(captured["messages"][0]["content"]) <= 2200
+    assert len(captured["messages"][0]["content"]) <= 2600  # правила памяти + 1800 символов воспоминаний
     assert captured["messages"][-1] == {"role": "user", "content": "Расскажи историю"}
 
 

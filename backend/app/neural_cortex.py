@@ -10,6 +10,12 @@ from math import log
 from typing import Iterable
 from .cognitive_evolution import terms, BRAINS
 
+
+def stems(text: str) -> set[str]:
+    """Same Russian stemming as Memory Core, so «проект» and «проекта» connect."""
+    from .memory_engine import search_stem
+    return {search_stem(t) for t in terms(text)}
+
 MAX_NODES = 600
 MAX_EDGES = 1200
 MAX_DEGREE = 12
@@ -39,7 +45,7 @@ class NeuralCortex:
         self._build()
 
     def _build(self) -> None:
-        token_sets = {id_: terms(node.text) for id_, node in self.nodes.items()}
+        token_sets = {id_: stems(node.text) for id_, node in self.nodes.items()}
         frequency = Counter(t for ts in token_sets.values() for t in ts)
         proposals = []
         keys = sorted(self.nodes)

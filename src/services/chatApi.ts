@@ -35,6 +35,7 @@ export type MemoryPolicy = {
 export type MemoryEvolution = {
   generation: number; strategy: string; evaluations: number; lastEvaluated: number;
   microbrains: number; adaptiveSynapses: number; automatic: boolean;
+  benchmark?: 'feedback' | 'self_retrieval_proxy' | 'none'; feedbackCases?: number;
 };
 export type CortexStatus = {
   roots: number; edges: number; connectedBrains: number; brainPairs: number;
@@ -87,7 +88,18 @@ export type EpisodicMemoryOverview = {
 export type MemoryRecallPreview = { memories: MemoryFact[]; context: string };
 export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode: boolean; selectedAt: number; content: string };
 export type ChatMatch = Message & { conversationId: string };
-export type Exchange = { user: Message; assistant: Message };
+export type RecallMemory = { id: string; content: string; brain: MemoryBrain };
+export type RecallTrace = { traceId: string; items: RecallMemory[] };
+export type Exchange = { user: Message; assistant: Message; memory?: RecallTrace; interrupted?: boolean };
+
+/** Ошибка потока с режимом: в демо-режиме нет платных повторов и предупреждений об оплате. */
+export class StreamError extends Error {
+  constructor(message: string, readonly mode: 'cloud' | 'demo' | null, readonly paid: boolean,
+    readonly saved: Exchange | null) {
+    super(message);
+    this.name = 'StreamError';
+  }
+}
 
 export async function parse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -351,8 +363,11 @@ export async function consumeSSE(
           const part = payload.text;
           if (typeof part === 'string') onDelta(part);
         } else if (event === 'error') {
-          const message = payload && typeof payload === 'object' && 'message' in payload ? payload.message : null;
-          throw new Error(typeof message === 'string' ? message : 'Ошибка потокового ответа.');
+          const info = (payload && typeof payload === 'object' ? payload : {}) as
+            { message?: unknown; mode?: unknown; paid?: unknown; saved?: unknown };
+          const mode = info.mode === 'cloud' || info.mode === 'demo' ? info.mode : null;
+          throw new StreamError(typeof info.message === 'string' ? info.message : 'Ошибка потокового ответа.',
+            mode, info.paid !== false, info.saved && typeof info.saved === 'object' ? info.saved as Exchange : null);
         } else if (event === 'done') {
           return payload as Exchange;
         }
@@ -376,4 +391,30 @@ export async function streamMessage(
   if (!response.ok) await parse(response);
   if (!response.body) throw new Error('Браузер не поддерживает потоковый ответ.');
   return consumeSSE(response.body, onDelta);
+}
+
+export async function loadOlderHistory(conversationId: string, beforeId: string, limit = 100): Promise<Message[]> {
+  const args = new URLSearchParams({ conversationId, before: beforeId, limit: String(limit) });
+  return (await parse<{ messages: Message[] }>(await fetch('/api/chat/messages?' + args.toString(), { cache: 'no-store' }))).messages;
+}
+
+export async function getEngineMode(): Promise<'cloud' | 'demo'> {
+  const data = await parse<{ engine: string }>(await fetch('/api/health', { cache: 'no-store' }));
+  return data.engine === 'cloud' ? 'cloud' : 'demo';
+}
+
+export async function rateRecalledMemory(traceId: string, memoryId: string, helpful: boolean): Promise<void> {
+  await parse(await fetch('/api/memory/recall/' + encodeURIComponent(traceId) + '/feedback', {
+    method: 'POST', headers, body: JSON.stringify({ memoryId, helpful }),
+  }));
+}
+
+export type CloudBrains = { brains: Record<MemoryBrain, boolean>; enabled: boolean };
+
+export async function getCloudBrains(): Promise<CloudBrains> {
+  return parse(await fetch('/api/memory/cloud-brains', { cache: 'no-store' }));
+}
+
+export async function setCloudBrains(brains: Partial<Record<MemoryBrain, boolean>>): Promise<CloudBrains> {
+  return parse(await fetch('/api/memory/cloud-brains', { method: 'PUT', headers, body: JSON.stringify({ brains }) }));
 }
