@@ -2004,6 +2004,36 @@ class MemoryEngine:
                     "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
                 ).fetchone()[0]
 
+    def universe_quality_gate(self) -> dict:
+        """Holdout-style user-feedback metrics; never fabricate cognitive progress.
+
+        Feedback is the available supervision, not an independent IQ benchmark.
+        Scores only published with at least six valid distinct query/fact cases.
+        """
+        rows=self._visible_deep_rows("main",False)[:600]
+        known={r["id"] for r in rows}
+        judgments=[j for j in self.relevance_judgments() if j["memoryId"] in known]
+        unique={(j["query"],j["memoryId"]):j for j in judgments}
+        cases=list(unique.values())
+        count=len(cases)
+        status=self.evolution_status()
+        active=status["strategy"]
+        scores={}
+        if count>=6:
+            scores={name:self._evolution_feedback_score(rows,name,cases)
+                    for name in ("balanced","focused","context")}
+        active_score=scores.get(active)
+        baseline=scores.get("balanced")
+        return {"cases":count,"minimumCases":6,"sufficientEvidence":count>=6,
+                "activeStrategy":active,"activeScore":active_score,
+                "baselineScore":baseline,
+                "deltaVsBaseline":round(active_score-baseline,4)
+                                   if active_score is not None and baseline is not None else None,
+                "scores":scores,"metric":"top3_user_feedback_recall",
+                "holdoutIndependent":False,
+                "generalIntelligenceMeasured":False,
+                "source":"local_confirmed_user_feedback"}
+
     def universe_evolution_lab(self) -> dict:
         """Measured offline trials and structural growth, without private texts."""
         with closing(db.connection(self.path)) as conn:
