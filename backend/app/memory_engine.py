@@ -2323,6 +2323,17 @@ class MemoryEngine:
                 "sourceScoped":True, "mode":"read_only_experiment",
                 "activeTopologyUnchanged":True}
 
+    def omega_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
+        """Source-preserving six-system diagnostic from only visible memories."""
+        from .omega import Omega
+        from .infinity_growth import Evidence
+        visible=self._visible_deep_rows(conversation_id,cloud_mode)
+        return Omega(
+            Evidence(id=r["id"],brain=r["brain"],text=r["content"],
+                     source=r["sourceMessageId"],scope=conversation_id)
+            for r in visible[:10000] if r.get("sourceMessageId")
+        ).overview()
+
     def infinity_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
         """On-demand, visibility-filtered, bounded growth proposal; no mutations."""
         from .infinity_growth import Evidence, InfinityGrowth
