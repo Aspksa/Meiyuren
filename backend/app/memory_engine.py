@@ -2004,6 +2004,28 @@ class MemoryEngine:
                     "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
                 ).fetchone()[0]
 
+    def universe_evolution_lab(self) -> dict:
+        """Measured offline trials and structural growth, without private texts."""
+        with closing(db.connection(self.path)) as conn:
+            trials=conn.execute(
+                "SELECT generation,strategy,benchmark_cases,proxy_score,selected,created_at "
+                "FROM memory_evolution_trials ORDER BY generation DESC,strategy LIMIT 90"
+            ).fetchall()
+            branches=conn.execute(
+                "SELECT root_brain AS brain,COUNT(*) AS total FROM memory_branches "
+                "WHERE depth>0 GROUP BY root_brain"
+            ).fetchall()
+        evolution=self.evolution_status()
+        return {"evolution":evolution,
+                "trials":[{"generation":r["generation"],"strategy":r["strategy"],
+                           "cases":r["benchmark_cases"],"score":r["proxy_score"],
+                           "selected":bool(r["selected"]),"timestamp":r["created_at"]}
+                          for r in trials],
+                "branchesByBrain":{name:next((r["total"] for r in branches
+                                            if r["brain"]==name),0) for name in BRAINS},
+                "scoreMeaning":"offline retrieval proxy or explicit user feedback; not general intelligence",
+                "readOnly":True}
+
     def universe_health(self) -> dict:
         """Read-only graph integrity checks and evolution counters; no private texts."""
         with closing(db.connection(self.path)) as conn:
