@@ -27,6 +27,22 @@ BRAINS = (
 )
 EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBED_DIMS = 1024
+MAX_BRANCH_DEPTH = 4
+MAX_BRANCH_CHILDREN = 8
+BRANCH_SCAN_LIMIT = 500
+# Automatically accepted facts must be direct user statements, never AI output,
+# quoted third-party instructions or suspected private data.
+AUTO_DIRECT = re.compile(
+    r"(?iu)^\s*(?:я\s+)?(?:изучаю|учу|разрабатываю|работаю\s+над|"
+    r"планирую|собираюсь|хочу|решил|решила|обычно|регулярно|"
+    r"каждый\s+день|каждое\s+утро|мой\s+проект|моя\s+цель)\b"
+)
+AUTO_PRIVATE = re.compile(
+    r"(?iu)\b(?:диагноз|болею|болезнь|здоровье|лечусь|лечени[ея]|"
+    r"медицинск\w*|паспорт|снилс|инн|адрес|квартира|телефон|"
+    r"банк|банковск\w*|сч[её]т|кредит|долг|зарплата|доход|"
+    r"политическ\w*|религи\w*|сексуальн\w*|интимн\w*)\b"
+)
 
 
 def classify_brain(content: str) -> str:
@@ -240,6 +256,31 @@ class MemoryEngine:
                 policy_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_policy)")}
                 if "allow_cloud_embeddings" not in policy_columns:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
+                if "auto_growth" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_growth INTEGER NOT NULL DEFAULT 1")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    root_brain TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    depth INTEGER NOT NULL CHECK(depth BETWEEN 0 AND 4),
+                    support INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(parent_id, term)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_branch_members (
+                    branch_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+                    PRIMARY KEY(branch_id, memory_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_branch_members_memory ON memory_branch_members(memory_id)")
+                for root in BRAINS:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_branches "
+                        "(id,parent_id,root_brain,term,title,depth,support,updated_at) "
+                        "VALUES(?,NULL,?,?,?,0,0,?)",
+                        (root,root,root,root,now())
+                    )
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_links (
                     left_id TEXT NOT NULL, right_id TEXT NOT NULL,
                     relation TEXT NOT NULL CHECK (relation IN ('shared_topic','neural_similarity')),
@@ -300,10 +341,10 @@ class MemoryEngine:
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
