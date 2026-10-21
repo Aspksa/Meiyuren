@@ -36,10 +36,22 @@ export type MemoryEvolution = {
   generation: number; strategy: string; evaluations: number; lastEvaluated: number;
   microbrains: number; adaptiveSynapses: number; automatic: boolean;
 };
+export type CortexStatus = {
+  roots: number; edges: number; connectedBrains: number; brainPairs: number;
+  evaluation: { cases: number; baselineHits: number; meshHits: number; evaluatedAt: number };
+};
+export type CortexProvenance = {
+  confirmed: number; sourceBacked: number; withoutMessageSource: number;
+  potentialPreferenceConflicts: number;
+};
+export type CortexConnection = {
+  item: DeepMemoryFact; fromBrain: MemoryBrain; toBrain: MemoryBrain;
+  sharedTerms: number; strength: number; relation: 'shared_evidence';
+};
 export type MemoryStatus = {
   facts: number; pending: number; jobs: number; summaries: number;
   policy: MemoryPolicy; network: MemoryNetwork; autonomousBranches: number;
-  evolution: MemoryEvolution;
+  evolution: MemoryEvolution; cortex: CortexStatus;
 };
 export type MemoryExplanation = {
   item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
@@ -242,6 +254,27 @@ export async function sendDeepMemoryFeedback(
   return parse(await fetch('/api/memory/deep/facts/' + encodeURIComponent(memoryId) + '/feedback', {
     method: 'POST', headers, body: JSON.stringify({ helpful }),
   }));
+}
+
+export async function getCortexMesh(
+  conversationId = 'main', cloudMode = false,
+): Promise<CortexStatus & { provenance: CortexProvenance }> {
+  const params = new URLSearchParams({ conversationId, cloudMode: String(cloudMode) });
+  return parse(await fetch('/api/memory/cortex?' + params.toString(), { cache: 'no-store' }));
+}
+
+export async function getCortexConnections(
+  id: string, conversationId = 'main', cloudMode = false,
+): Promise<{ connections: CortexConnection[] }> {
+  const params = new URLSearchParams({ conversationId, cloudMode: String(cloudMode) });
+  return parse(await fetch('/api/memory/cortex/facts/' + encodeURIComponent(id) + '/connections?' +
+    params.toString(), { cache: 'no-store' }));
+}
+
+export async function evaluateCortexMesh(): Promise<{
+  cases: number; baselineHits: number; meshHits: number;
+}> {
+  return parse(await fetch('/api/memory/cortex/evaluate', { method: 'POST', headers }));
 }
 
 export async function getMemoryEvolution(): Promise<MemoryEvolution> {
