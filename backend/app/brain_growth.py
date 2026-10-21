@@ -171,6 +171,9 @@ class BrainGrowth:
                     continue
                 text = row["content"].rstrip(".!")
                 found.append(("due", row["id"], f"Ты говорил: «{text}». К какому сроку хочешь это сделать?"))
+        # Противоречия и прошедшие сроки из логического мозга — тоже повод уточнить.
+        from .reasoning import Reasoner
+        found += Reasoner(self.path, self.engine).questions()
         for entity in self.engine.entity_list():
             if entity["kind"] == "project" and entity["facts"] == 1:
                 found.append(("entity", entity["id"], f"Как продвигается проект {entity['name']}?"))

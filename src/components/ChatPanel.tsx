@@ -2,7 +2,7 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { avatarUrl } from '../lib/avatars';
 import {
   createConversation, deleteConversation, describeIdleReport, getConversations, getEngineMode, getIdleBriefing,
-  dismissCuriosity, loadHistory, loadOlderHistory, markIdleBriefingSeen, rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
+  dismissCuriosity, loadHistory, rejectInference, loadOlderHistory, markIdleBriefingSeen, rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
 } from '../services/chatApi';
 import type { Conversation, ChatMatch, Curiosity, Exchange, IdleBriefing, RecallTrace } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
@@ -35,6 +35,7 @@ export function ChatPanel() {
   // Воспоминания, использованные в ответах этой сессии: assistant message id → след.
   const [traces, setTraces] = useState<Record<string, RecallTrace>>({});
   const [questions, setQuestions] = useState<Record<string, Curiosity>>({});
+  const [rejected, setRejected] = useState<Record<string, boolean>>({});
   const [rated, setRated] = useState<Record<string, boolean>>({});
   const [briefing, setBriefing] = useState<IdleBriefing | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -164,6 +165,15 @@ export function ChatPanel() {
     if (exchange.curiosity) {
       const question = exchange.curiosity;
       setQuestions(value => ({ ...value, [exchange.assistant.id]: question }));
+    }
+  }
+
+  async function reject(inferenceId: string) {
+    try {
+      await rejectInference(inferenceId);
+      setRejected(value => ({ ...value, [inferenceId]: true }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось отклонить вывод');
     }
   }
 
@@ -311,8 +321,8 @@ export function ChatPanel() {
           return <div className={`message message--${item.role}${focusId === item.id ? ' message--focus' : ''}`}
             key={item.id} data-message-id={item.id}>
             <div className="message__text">{item.text}</div>
-            {trace && trace.items.length > 0 && <details className="message__memory">
-              <summary>Память: {trace.items.length}</summary>
+            {trace && (trace.items.length > 0 || (trace.inferences ?? []).length > 0) && <details className="message__memory">
+              <summary>Память: {trace.items.length}{(trace.inferences ?? []).length > 0 ? ' · выводы: ' + (trace.inferences ?? []).length : ''}</summary>
               <ul>
                 {trace.items.map(memory => {
                   const verdict = rated[trace.traceId + ':' + memory.id];
@@ -325,6 +335,13 @@ export function ChatPanel() {
                       aria-pressed={verdict === false} onClick={() => void rate(trace, memory.id, false)}>👎</button>
                   </li>;
                 })}
+                {(trace.inferences ?? []).filter(inference => !rejected[inference.id]).map(inference => <li key={inference.id}
+                  className="message__inference">
+                  <span>Вывод: {inference.content}
+                    <small> · потому что {inference.because.map(item => '«' + item.content + '»').join(' + ')}</small></span>
+                  <button type="button" aria-label="Неверный вывод" title="Неверный вывод: больше не появится"
+                    onClick={() => void reject(inference.id)}>👎</button>
+                </li>)}
               </ul>
             </details>}
             {question && <div className="message__curiosity">

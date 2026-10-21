@@ -136,6 +136,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     evolution = EvolutionRuntime(database.with_name('cognitive_evolution.sqlite3'), engine)
     neural_ops = NeuralOperations(database)
     idle = IdleRuntime(database, engine)
+    reasoner = idle.reasoner
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -165,7 +166,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.31.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.32.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -228,6 +229,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not idle.growth.remove_brain(brain_id):
             raise HTTPException(404, detail="Мозг не найден.")
         return {"removed": True}
+
+    @app.get("/api/memory/inferences")
+    def memory_inferences():
+        return {"inferences": reasoner.listing()}
+
+    @app.post("/api/memory/inferences/{inference_id}/reject")
+    def memory_inference_reject(inference_id: str):
+        return {"rejected": reasoner.reject(inference_id)}
 
     @app.post("/api/memory/curiosity/{question_id}/dismiss")
     def memory_curiosity_dismiss(question_id: str):
@@ -302,8 +311,9 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             # Ошибка индексации не должна превращать уже оплаченный Cloud-ответ в ошибку.
             logging.getLogger(__name__).exception("Memory observe: запись в очередь не удалась")
         if trace and trace.get("traceId"):
-            # Какие воспоминания использованы в ответе: их можно оценить прямо в чате.
-            exchange = {**exchange, "memory": {"traceId": trace["traceId"], "items": trace["memories"]}}
+            # Какие воспоминания и выводы использованы в ответе: их можно оценить прямо в чате.
+            exchange = {**exchange, "memory": {"traceId": trace["traceId"], "items": trace["memories"],
+                                               "inferences": trace.get("inferences", [])}}
         if trace is not None:
             try:
                 # Мини-мозг иногда уточняет пробел в знаниях; ответ разбирается как обычная реплика.
