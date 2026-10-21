@@ -130,7 +130,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.14.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.15.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -408,6 +408,31 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/memory/episodes/rebuild")
     def rebuild_memory_episodes():
         return engine.rebuild_episodes()
+
+    @app.get("/api/memory/cortex")
+    def cortex_mesh_status(
+        conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return {**engine.cortex_status(),
+                "provenance":engine.cortex_provenance(conversationId,cloudMode)}
+
+    @app.get("/api/memory/cortex/facts/{fact_id}/connections")
+    def cortex_mesh_connections(
+        fact_id: str,conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return {"connections":engine.cortex_connections(fact_id,conversationId,cloudMode)}
+
+    @app.post("/api/memory/cortex/rebuild")
+    def cortex_mesh_rebuild():
+        return engine.rebuild_cortex()
+
+    @app.post("/api/memory/cortex/evaluate")
+    def cortex_mesh_evaluate():
+        return engine.evaluate_cortex()
 
     @app.get("/api/memory/deep/overview")
     def deep_memory_overview(
