@@ -60,9 +60,9 @@ CHANGE = re.compile(
 _PRONOUN = re.compile(r"(?iu)^\s*(он|она|они)\b")
 _PERSON = re.compile(
     r"(?iu)\b(?:мо[йяи]|наш[аи]?)\s+(?:лучш\w+\s+)?"
-    r"(брат\w*|сестр\w*|друг\w*|подруг\w*|мам\w*|пап\w*|жен\w*|муж\w*|сын\w*|доч\w*|"
+    r"(брат\w*|сестр\w*|друг\w*|друз\w*|подруг\w*|мам\w*|пап\w*|жен\w*|муж\w*|сын\w*|доч\w*|"
     r"коллег\w*|начальни\w*|руководител\w*|парен\w*|девушк\w*|бабушк\w*|дедушк\w*)"
-    r"(?:\s+(?P<name>[А-ЯЁA-Z][а-яёa-z]+))?"
+    r"(?:\s+(?P<name>(?-i:[А-ЯЁA-Z][а-яёa-z]+)))?"
 )
 _FEMININE = re.compile(r"(?iu)^(сестр|подруг|мам|жен|доч|девушк|бабушк)")
 
@@ -216,3 +216,80 @@ def resolve_pronoun(statement: str, before: str) -> str | None:
     if pronoun == "они" or (pronoun == "она") != feminine:
         return None
     return label + statement[found.end():]
+
+
+# --- Граф сущностей (этап 3): люди, проекты, места, организации, инструменты ---
+
+ENTITY_KINDS = ("person", "project", "place", "org", "tool")
+_PROJECT = re.compile(
+    r"(?iu)\bпроект\w*\s+(?:под\s+названием\s+)?[«\"]?(?P<name>[A-Za-zА-ЯЁа-яё0-9][\w-]{1,40})[»\"]?")
+_RESOLVED_PERSON = re.compile(r"^(?P<name>[А-ЯЁA-Z][а-яёa-z]+)\s+\((?P<role>[а-яё]+)\)")
+_CAPITAL = re.compile(r"(?<![\w-])(?P<prep>(?:в|во|из|на|до|к|по)\s+)?(?P<word>[А-ЯЁ][а-яё]{2,}|[A-Z][A-Za-z0-9+#.]{1,30})")
+_NOT_TOOL = frozenset(("I", "OK", "AI", "Meiyuren"))
+
+
+def _tags(word: str) -> set[str]:
+    morph = _morph()
+    if morph is None:
+        return set()
+    tags: set[str] = set()
+    for parse in morph.parse(word)[:4]:
+        tags |= {t for t in ("Name", "Surn", "Geox", "Orgn") if t in parse.tag}
+    return tags
+
+
+@lru_cache(maxsize=10_000)
+def name_form(word: str) -> str:
+    """Начальная форма имени: «Лену» → «Лена» (а не «лён»), «Пети» → «Петя»."""
+    morph = _morph()
+    if morph is None or not re.search(r"[А-ЯЁа-яё]", word):
+        return word
+    for parse in morph.parse(word):
+        if "Name" in parse.tag:
+            return parse.normal_form.capitalize()
+    return word
+
+
+def entity_key(name: str) -> str:
+    lowered = name_form(name).casefold() if name[:1].isupper() else name.casefold()
+    return lemma(lowered) if lemma(lowered) and not name[:1].isupper() else lowered
+
+
+def entities(text: str) -> list[tuple[str, str, str, str | None]]:
+    """(вид, ключ, имя, роль) для каждого упомянутого человека, проекта, места…
+
+    Только явные упоминания: «мой брат Петя», «проект Kitsune», «в Казани»,
+    «на Rust». Никаких догадок о людях, которых пользователь не назвал.
+    """
+    found: dict[tuple[str, str], tuple[str, str, str, str | None]] = {}
+
+    def add(kind: str, name: str, role: str | None = None) -> None:
+        key = entity_key(name) if kind != "person" or not role or name[0].isupper() else "роль:" + name.casefold()
+        found.setdefault((kind, key), (kind, key, name if kind != "person" else name[:1].upper() + name[1:], role))
+
+    resolved = _RESOLVED_PERSON.match(text)
+    if resolved:
+        add("person", name_form(resolved.group("name")), resolved.group("role"))
+    for match in _PERSON.finditer(text):
+        role = lemma(match.group(1).casefold()) or match.group(1).casefold()
+        add("person", name_form(match.group("name")) if match.group("name") else role, role)
+    projects = set()
+    for match in _PROJECT.finditer(text):
+        name = match.group("name")
+        projects.add(name)
+        add("project", name)
+    for match in _CAPITAL.finditer(text):
+        word = match.group("word")
+        if word in projects or word in _NOT_TOOL or match.start("word") == 0 and not word.isascii():
+            continue
+        if word.isascii():
+            add("tool", word)
+            continue
+        tags = _tags(word)
+        if match.group("prep") and "Geox" in tags:
+            add("place", (lemma(word.casefold()) or word).capitalize())
+        elif "Orgn" in tags:
+            add("org", (lemma(word.casefold()) or word).capitalize())
+        elif "Name" in tags and not any(v[0] == "person" and v[1] == entity_key(word) for v in found.values()):
+            add("person", name_form(word))
+    return list(found.values())

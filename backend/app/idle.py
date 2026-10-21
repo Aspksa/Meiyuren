@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import db
+from . import db, semantic
 from .memory_engine import (
     AUTO_PRIVATE, SECRET, TOKENS, MemoryEngine, _keywords, canonical, now, preference_topic,
     drop_backups, local_vector,
@@ -112,6 +112,7 @@ class IdleRuntime:
             ("selfTraining", self.self_train),
             ("unfinished", self.unfinished),
             ("vectors", self.vectorize),
+            ("meaning", self.meaning),
             ("health", self.health),
         )
         report: dict = {}
@@ -182,6 +183,7 @@ class IdleRuntime:
                         for table in ("memory_fts", "memory_vectors", "memory_local_vectors"):
                             conn.execute(f"DELETE FROM {table} WHERE item_id=?", (old,))
                         conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?", (old, old))
+                        MemoryEngine._drop_derived(conn, old)
             self.engine.grow_branches()
             self.engine.rebuild_deep_index()
         topics: dict[str, dict[bool, str]] = {}
@@ -257,6 +259,17 @@ class IdleRuntime:
                              "(SELECT id FROM memory_items WHERE status='confirmed')")
                 total = conn.execute("SELECT COUNT(*) FROM memory_local_vectors").fetchone()[0]
         return {"updated": len(values), "total": total}
+
+    # -- 5b. meaning model ------------------------------------------------
+    def meaning(self) -> dict:
+        """Модель смысла: один раз скачать (в фоне), затем считать векторы фактов."""
+        if not self.engine.policy()["semantic_model"]:
+            return {"state": "off"}
+        model = semantic.model_for(self.path)
+        if not model.ready:
+            model.start_loading(allow_download=True)
+            return model.status()
+        return {"state": "ready", **self.engine.semantic_index(model)}
 
     # -- 6. health ---------------------------------------------------------
     def health(self) -> dict:

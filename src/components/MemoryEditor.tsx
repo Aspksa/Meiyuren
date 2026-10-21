@@ -18,6 +18,7 @@ import type {
   CortexProvenance,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
+import { EntityPanel } from './EntityPanel';
 
 const BRAIN_NAMES: Record<MemoryBrain, string> = {
   identity: 'Личность', episodes: 'События', goals: 'Цели',
@@ -463,6 +464,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
         return 'Локально обработано задач: ' + result.processed;
       })}>Обработать очередь памяти</button>
 
+      <EntityPanel active={active} />
+
       <h4>Разрешения</h4>
       <p>По умолчанию память и заметки не передаются Cloud.ru. История текущего диалога передаётся провайдеру, когда включён облачный чат.</p>
       {policy && ([
@@ -471,11 +474,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
         ['auto_extract', 'Автоматически анализировать новые реплики (локально)'],
         ['auto_growth', 'Самостоятельно запоминать безопасные факты и выращивать ветви'],
         ['auto_evolution', 'Автоматически развивать специализации и проверять стратегии локально'],
+        ['semantic_model', 'Модель смысла: один раз скачать (около 220 МБ) и искать по смыслу, всё локально'],
         ['auto_summaries', 'Автоматически создавать выписки (локально)'],
         ['allow_cloud_embeddings', 'Разрешить ручную нейроиндексацию через Cloud.ru (может быть платной)'],
       ] as const).map(([key, caption]) =>
         <label className="memory-core__toggle" key={key}>
-          <input type="checkbox" checked={policy[key]} disabled={busy}
+          <input type="checkbox" checked={policy[key] ?? false} disabled={busy}
             onChange={event => void updatePolicy(key, event.target.checked)} />
           <span>{caption}</span>
         </label>)}

@@ -21,7 +21,7 @@ import uuid
 from . import db
 from .neural_cortex import Node, NeuralCortex
 from .neural_synapses import SynapticStore
-from . import understanding
+from . import semantic, understanding
 from .smart_memory import UNTRUSTED, durable_statement
 
 MAX_CONTEXT = 1700
@@ -381,6 +381,9 @@ class MemoryEngine:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_growth INTEGER NOT NULL DEFAULT 1")
                 if "auto_evolution" not in policy_columns:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_evolution INTEGER NOT NULL DEFAULT 1")
+                if "semantic_model" not in policy_columns:
+                    # v0.30: модель смысла скачивается один раз в режиме простоя; можно выключить.
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN semantic_model INTEGER NOT NULL DEFAULT 1")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
                     id TEXT PRIMARY KEY,
                     parent_id TEXT,
@@ -516,6 +519,23 @@ class MemoryEngine:
                     memory_id TEXT PRIMARY KEY, strength REAL NOT NULL, uses INTEGER NOT NULL,
                     last_used INTEGER NOT NULL, updated_at INTEGER NOT NULL
                 )""")
+                # Граф сущностей и векторы смысла (v0.30).
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_entities (
+                    id TEXT PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL, name TEXT NOT NULL,
+                    role TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                    UNIQUE(kind,key)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_entity_mentions (
+                    entity_id TEXT NOT NULL, memory_id TEXT NOT NULL, PRIMARY KEY(entity_id,memory_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_mentions_memory ON memory_entity_mentions(memory_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_entity_indexed (
+                    memory_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_semantic_vectors (
+                    item_id TEXT PRIMARY KEY, digest TEXT NOT NULL, vector BLOB NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_local_vectors (
                     item_id TEXT PRIMARY KEY, digest TEXT NOT NULL, vector_json TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -580,10 +600,10 @@ class MemoryEngine:
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution","semantic_model"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -737,6 +757,7 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_local_vectors WHERE item_id=?",(target,))
+                    self._drop_derived(conn,target)
                     conn.execute("DELETE FROM memory_strength WHERE memory_id=?",(target,))
                     conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
                                  (target,target))
@@ -861,7 +882,9 @@ class MemoryEngine:
     def process_pending(self,limit: int=10) -> int:
         """Worker и ручной запрос ждут одну и ту же очередь, без гонок."""
         with self._jobs_lock:
-            return self._process_pending_locked(limit)
+            processed=self._process_pending_locked(limit)
+            self.sync_entities()
+            return processed
 
     def _process_pending_locked(self,limit: int=10) -> int:
         """Локальная обработка, обслуживаемая только одним worker за раз."""
@@ -1101,7 +1124,17 @@ class MemoryEngine:
         conn.execute("DELETE FROM memory_fts WHERE item_id=?",(old_id,))
         conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(old_id,old_id))
         conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(old_id,))
+        MemoryEngine._drop_derived(conn,old_id)
         conn.execute("DELETE FROM memory_summaries")
+
+    @staticmethod
+    def _drop_derived(conn: sqlite3.Connection,item_id: str) -> None:
+        """Граф и векторы смысла забывают факт сразу, а не при следующей синхронизации."""
+        conn.execute("DELETE FROM memory_semantic_vectors WHERE item_id=?",(item_id,))
+        conn.execute("DELETE FROM memory_entity_indexed WHERE memory_id=?",(item_id,))
+        conn.execute("DELETE FROM memory_entity_mentions WHERE memory_id=?",(item_id,))
+        conn.execute("DELETE FROM memory_entities WHERE id NOT IN "
+                     "(SELECT entity_id FROM memory_entity_mentions)")
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -1195,6 +1228,7 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
                     conn.execute("DELETE FROM memory_local_vectors WHERE item_id=?",(item_id,))
+                    self._drop_derived(conn,item_id)
                     conn.execute("DELETE FROM memory_strength WHERE memory_id=?",(item_id,))
                     conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
                                  (item_id,item_id))
@@ -2537,10 +2571,19 @@ class MemoryEngine:
             strength={r[0]:r[1] for r in conn.execute("SELECT memory_id,strength FROM memory_strength")}
             vectors={r[0]:r[1] for r in conn.execute("SELECT item_id,vector_json FROM memory_local_vectors")}
         query_vector=local_vector(query) if vectors else {}
+        about=self._entity_memories(query)
+        meaning=self._semantic_scores(query)
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
             relevance=shared*word_weight+(2.0 if row["id"] in base else 0)
+            if row["id"] in about:
+                # «Что ты знаешь про Петю?» — все факты о Пете, а не только с тем же словом.
+                relevance+=word_weight
+            similar=meaning.get(row["id"],0.0)
+            if similar>=semantic.MATCH:
+                # Модель смысла: «кофе» находит «эспрессо», «работа» — «офис».
+                relevance+=similar*word_weight
             if not relevance and query_vector and row["id"] in vectors:
                 # Нечёткое совпадение форм слова, когда точных общих слов нет.
                 similarity=vector_similarity(query_vector,json.loads(vectors[row["id"]]))
@@ -2856,6 +2899,137 @@ class MemoryEngine:
                     "searches=searches+1,hits=hits+excluded.hits,updated_at=excluded.updated_at",
                     (intent,int(bool(selected)),now())
                 )
+
+    # --- Граф сущностей (v0.30) -------------------------------------------
+    def sync_entities(self,limit: int=400) -> int:
+        """Привязать новые факты к людям, проектам, местам; убрать ушедшие."""
+        indexed=0
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("DELETE FROM memory_entity_mentions WHERE memory_id NOT IN "
+                             "(SELECT id FROM memory_items WHERE status='confirmed')")
+                conn.execute("DELETE FROM memory_entity_indexed WHERE memory_id NOT IN "
+                             "(SELECT id FROM memory_items WHERE status='confirmed')")
+                rows=conn.execute(
+                    "SELECT m.id,m.content,m.fingerprint FROM memory_items m "
+                    "LEFT JOIN memory_entity_indexed x ON x.memory_id=m.id "
+                    "WHERE m.status='confirmed' AND (x.memory_id IS NULL OR x.fingerprint!=m.fingerprint) "
+                    "LIMIT ?",(limit,)).fetchall()
+                ts=now()
+                for row in rows:
+                    conn.execute("DELETE FROM memory_entity_mentions WHERE memory_id=?",(row["id"],))
+                    if not SECRET.search(row["content"]):
+                        for kind,key,name,role in understanding.entities(row["content"]):
+                            entity=conn.execute("SELECT id,role FROM memory_entities WHERE kind=? AND key=?",
+                                                (kind,key)).fetchone()
+                            if entity:
+                                entity_id=entity["id"]
+                                conn.execute("UPDATE memory_entities SET updated_at=?,role=COALESCE(role,?) "
+                                             "WHERE id=?",(ts,role,entity_id))
+                            else:
+                                entity_id=str(uuid.uuid4())
+                                conn.execute("INSERT INTO memory_entities VALUES(?,?,?,?,?,?,?)",
+                                             (entity_id,kind,key,name,role,ts,ts))
+                            conn.execute("INSERT OR IGNORE INTO memory_entity_mentions VALUES(?,?)",
+                                         (entity_id,row["id"]))
+                    conn.execute("INSERT OR REPLACE INTO memory_entity_indexed VALUES(?,?)",
+                                 (row["id"],row["fingerprint"]))
+                    indexed+=1
+                conn.execute("DELETE FROM memory_entities WHERE id NOT IN "
+                             "(SELECT entity_id FROM memory_entity_mentions)")
+        return indexed
+
+    def entity_list(self) -> list[dict]:
+        self.sync_entities()
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT e.*,COUNT(x.memory_id) AS facts FROM memory_entities e "
+                "JOIN memory_entity_mentions x ON x.entity_id=e.id "
+                "JOIN memory_items m ON m.id=x.memory_id AND m.status='confirmed' "
+                "GROUP BY e.id ORDER BY facts DESC,e.updated_at DESC LIMIT 200").fetchall()
+        return [dict(id=r["id"],kind=r["kind"],name=r["name"],role=r["role"],facts=r["facts"]) for r in rows]
+
+    def entity_detail(self,entity_id: str) -> dict | None:
+        with closing(db.connection(self.path)) as conn:
+            entity=conn.execute("SELECT * FROM memory_entities WHERE id=?",(entity_id,)).fetchone()
+            if not entity:
+                return None
+            rows=conn.execute(
+                "SELECT m.* FROM memory_items m JOIN memory_entity_mentions x ON x.memory_id=m.id "
+                "WHERE x.entity_id=? AND m.status='confirmed' ORDER BY m.updated_at DESC",
+                (entity_id,)).fetchall()
+            related=conn.execute(
+                "SELECT e.id,e.kind,e.name,COUNT(*) AS shared FROM memory_entity_mentions a "
+                "JOIN memory_entity_mentions b ON b.memory_id=a.memory_id AND b.entity_id!=a.entity_id "
+                "JOIN memory_entities e ON e.id=b.entity_id WHERE a.entity_id=? "
+                "GROUP BY e.id ORDER BY shared DESC LIMIT 12",(entity_id,)).fetchall()
+        return dict(id=entity["id"],kind=entity["kind"],name=entity["name"],role=entity["role"],
+                    facts=[self._item(r) for r in rows],
+                    related=[dict(id=r["id"],kind=r["kind"],name=r["name"],shared=r["shared"])
+                             for r in related])
+
+    def _entity_memories(self,query: str) -> set[str]:
+        """Факты о людях, проектах и местах, названных в вопросе («про Петю», «с братом»)."""
+        words=TOKENS.findall(query)
+        keys=set()
+        for word in words:
+            lowered=word.casefold()
+            keys.add(lowered)
+            keys.add(understanding.lemma(lowered) or lowered)
+            if word[:1].isupper():
+                keys.add(understanding.name_form(word).casefold())
+        keys-=STOPWORDS
+        if not keys:
+            return set()
+        marks=",".join("?"*len(keys))
+        roles=["роль:"+k for k in keys]
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                f"SELECT DISTINCT x.memory_id FROM memory_entities e "
+                f"JOIN memory_entity_mentions x ON x.entity_id=e.id "
+                f"WHERE e.key IN ({marks}) OR (e.kind='person' AND e.role IN ({marks})) "
+                f"OR e.key IN ({marks})",(*keys,*keys,*roles)).fetchall()
+        return {r[0] for r in rows}
+
+    # --- Модель смысла (v0.30) ---------------------------------------------
+    def semantic_index(self,model,limit: int=500) -> dict:
+        """Векторы смысла для фактов без них; вызывается из режима простоя."""
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.id,m.content,m.fingerprint FROM memory_items m "
+                "LEFT JOIN memory_semantic_vectors v ON v.item_id=m.id "
+                "WHERE m.status='confirmed' AND (v.item_id IS NULL OR v.digest!=m.fingerprint) "
+                "LIMIT ?",(limit,)).fetchall()
+        rows=[r for r in rows if not SECRET.search(r["content"])]
+        values=[]
+        if rows:
+            vectors=model.encode([r["content"] for r in rows])
+            values=[(r["id"],r["fingerprint"],semantic.pack(v),now()) for r,v in zip(rows,vectors)]
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for value in values:
+                    # Факт мог быть забыт, пока считался вектор: записываем только живые.
+                    if conn.execute("SELECT 1 FROM memory_items WHERE id=? AND status='confirmed' "
+                                    "AND fingerprint=?",(value[0],value[1])).fetchone():
+                        conn.execute("INSERT OR REPLACE INTO memory_semantic_vectors VALUES(?,?,?,?)",value)
+                conn.execute("DELETE FROM memory_semantic_vectors WHERE item_id NOT IN "
+                             "(SELECT id FROM memory_items WHERE status='confirmed')")
+                total=conn.execute("SELECT COUNT(*) FROM memory_semantic_vectors").fetchone()[0]
+        return {"updated":len(values),"total":total}
+
+    def _semantic_scores(self,query: str) -> dict[str,float]:
+        model=semantic.model_for(self.path)
+        if not model.ready:
+            return {}
+        try:
+            probe=model.encode([query])[0]
+        except Exception:
+            return {}
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute("SELECT item_id,vector FROM memory_semantic_vectors").fetchall()
+        return {r[0]:semantic.similarity(probe,semantic.unpack(r[1])) for r in rows}
 
     def status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
