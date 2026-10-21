@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from contextlib import closing
 import hashlib
+import json
+import math
+import httpx
 from pathlib import Path
 import re
 import sqlite3
@@ -16,6 +19,39 @@ import uuid
 from . import db
 
 MAX_CONTEXT = 1700
+BRAINS = ("identity", "episodes", "goals", "habits", "knowledge")
+EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+EMBED_DIMS = 1024
+
+
+def classify_brain(content: str) -> str:
+    """Правила маршрутизации: AI не выдумывает категорию и факты."""
+    text = content.casefold()
+    if re.search(r"\b(?:цель|планирую|собираюсь|хочу|намерен|достичь)\b", text):
+        return "goals"
+    if re.search(r"\b(?:вчера|сегодня|позавчера|неделю назад|событие|путешествовал|побывал)\b", text):
+        return "episodes"
+    if re.search(r"\b(?:каждый день|каждое утро|обычно|привык|привычка|регулярно)\b", text):
+        return "habits"
+    if re.search(r"\b(?:изучаю|научился|умею|освоил|обучаюсь|учу)\b", text):
+        return "knowledge"
+    return "identity"
+
+
+def _keywords(content: str) -> set[str]:
+    return {search_stem(word.casefold()) for word in TOKENS.findall(content)
+            if len(word)>3 and word.casefold() not in STOPWORDS}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if len(a)!=len(b) or not a:
+        return 0.0
+    a_norm=math.sqrt(sum(x*x for x in a))
+    b_norm=math.sqrt(sum(x*x for x in b))
+    if not a_norm or not b_norm:
+        return 0.0
+    return sum(x*y for x,y in zip(a,b))/(a_norm*b_norm)
+
 TOKENS = re.compile(r"[^\W_]+", re.UNICODE)
 SECRET = re.compile(
     r"(?i)(?:api[\s_-]*key|secret|token|парол[ьи]|ключ[\s_-]*api|"
@@ -166,6 +202,37 @@ class MemoryEngine:
                 item_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_items)")}
                 if "superseded_by" not in item_columns:
                     conn.execute("ALTER TABLE memory_items ADD COLUMN superseded_by TEXT")
+                if "brain" not in item_columns:
+                    conn.execute("ALTER TABLE memory_items ADD COLUMN brain TEXT NOT NULL DEFAULT 'identity'")
+                candidate_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_candidates)")}
+                if "brain" not in candidate_columns:
+                    conn.execute("ALTER TABLE memory_candidates ADD COLUMN brain TEXT NOT NULL DEFAULT 'identity'")
+                policy_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_policy)")}
+                if "allow_cloud_embeddings" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_links (
+                    left_id TEXT NOT NULL, right_id TEXT NOT NULL,
+                    relation TEXT NOT NULL CHECK (relation IN ('shared_topic','neural_similarity')),
+                    weight REAL NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(left_id,right_id,relation)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_right ON memory_links(right_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_vectors (
+                    item_id TEXT PRIMARY KEY, model TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, vector_json TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL, created_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_embedding_requests (
+                    request_id TEXT PRIMARY KEY, item_id TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, model TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending','done','unknown')),
+                    created_at INTEGER NOT NULL
+                )""")
+                # Категории для ранее сохранённых фактов, только при первом добавлении поля.
+                if "brain" not in item_columns:
+                    for legacy_item in conn.execute("SELECT id,content FROM memory_items"):
+                        conn.execute("UPDATE memory_items SET brain=? WHERE id=?",
+                                     (classify_brain(legacy_item["content"]),legacy_item["id"]))
 
                 # FTS5 — только локальный индекс. Данные удаляются вместе с фактом.
                 conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(item_id UNINDEXED, content, tokenize='unicode61')")
@@ -191,10 +258,10 @@ class MemoryEngine:
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -214,7 +281,7 @@ class MemoryEngine:
                     updatedAt=row["updated_at"],kind=row["kind"],sourceMessageId=row["source_message_id"],
                     conversationId=row["conversation_id"],cloudAllowed=bool(row["cloud_allowed"]),
                     expiresAt=row["expires_at"],revision=row["revision"],status=row["status"],
-                    supersededBy=row["superseded_by"])
+                    supersededBy=row["superseded_by"],brain=row["brain"])
 
     def add_manual(self, content: str, *, cloud_allowed: bool=False) -> dict:
         content=content.strip()
