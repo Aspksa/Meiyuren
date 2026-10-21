@@ -498,6 +498,8 @@ class MemoryEngine:
                 if digest(old["content"])!=digest(content) or (old["cloud_allowed"] and not cloud_allowed):
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
                 conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
+                conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                             (item_id,item_id))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
@@ -559,6 +561,7 @@ class MemoryEngine:
                 # Связанная с историей память могла попасть в любую выписку.
                 conn.execute("DELETE FROM memory_summaries")
         if self.policy()["auto_growth"]:
+            if self.policy()["auto_growth"]:
             self.grow_branches()
         self.rebuild_deep_index()
         if self.policy()["auto_evolution"]:
@@ -663,7 +666,8 @@ class MemoryEngine:
 
     def process_pending(self,limit: int=10) -> int:
         """Один локальный worker обслуживает обучение, ветвление и периодическую очистку."""
-        if self.policy()["auto_growth"]:
+        policy=self.policy()
+        if policy["auto_growth"] or policy["auto_evolution"]:
             self.maintain()
         done=0
         for _ in range(min(limit,50)):
