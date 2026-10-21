@@ -2012,8 +2012,8 @@ class MemoryEngine:
                 "FROM memory_evolution_trials ORDER BY generation DESC,strategy LIMIT 90"
             ).fetchall()
             branches=conn.execute(
-                "SELECT brain,COUNT(*) AS total FROM memory_branches "
-                "WHERE depth>0 GROUP BY brain"
+                "SELECT root_brain AS brain,COUNT(*) AS total FROM memory_branches "
+                "WHERE depth>0 GROUP BY root_brain"
             ).fetchall()
         evolution=self.evolution_status()
         return {"evolution":evolution,
