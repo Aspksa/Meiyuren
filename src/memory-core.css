@@ -15,3 +15,6 @@
 .memory-core__explanation summary{cursor:pointer;color:#e9cea8;font-size:11px}
 .memory-core__explanation strong{font-size:12px}
 .memory-core__explanation li{font-size:11px}
+
+.memory-core__explanation details{margin:6px 0}
+.memory-core__explanation details>p{overflow-wrap:anywhere;font-size:11px;margin:4px 0}

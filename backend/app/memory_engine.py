@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from datetime import datetime, date, timezone
 import hashlib
 import json
 import math
@@ -299,6 +300,24 @@ class MemoryEngine:
                     item_ids TEXT NOT NULL, updated_at INTEGER NOT NULL,
                     PRIMARY KEY(conversation_id,brain)
                 )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_episodes (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    day TEXT NOT NULL, started_at INTEGER NOT NULL,
+                    ended_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                    UNIQUE(conversation_id,day)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_episode_members (
+                    episode_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+                    PRIMARY KEY(episode_id,memory_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_member ON memory_episode_members(memory_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_project_checkpoints (
+                    memory_id TEXT PRIMARY KEY, project_key TEXT NOT NULL,
+                    state TEXT NOT NULL, observed_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_project ON memory_project_checkpoints(project_key,observed_at)")
+
                 for root in BRAINS:
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_branches "
@@ -968,6 +987,18 @@ class MemoryEngine:
                 break  # Не разрезаем утверждение на части.
             pieces.append(piece)
             remaining-=len(piece)+1
+        if self._continuation_query(query) and remaining>90:
+            checkpoint=self.episode_overview(conversation_id,cloud_mode)
+            included={item["id"] for item in selected}
+            for item in checkpoint["continuation"][:4]:
+                if item["memoryId"] in included:
+                    continue
+                piece=("Последняя контрольная точка (из подтверждённого факта): "
+                       +item["content"])
+                if SECRET.search(piece) or len(piece)+1>remaining:
+                    continue
+                pieces.append(piece)
+                remaining-=len(piece)+1
         with closing(db.connection(self.path)) as conn:
             summary=conn.execute(
                 "SELECT content,cloud_allowed FROM memory_summaries WHERE conversation_id=? AND status='approved'",
@@ -1450,6 +1481,163 @@ class MemoryEngine:
             (item_id,row["brain"],kind,state,row["created_at"],row["source_message_id"],row["updated_at"])
         )
 
+    @staticmethod
+    def _explicit_event_day(content: str) -> str | None:
+        """Event-time from an unambiguous written calendar date, not chat timestamps."""
+        patterns=(
+            (r"(?<!\d)(\d{4}-\d{2}-\d{2})(?!\d)", "iso"),
+            (r"(?<!\d)(\d{2}\.\d{2}\.\d{4})(?!\d)", "ru"),
+        )
+        for pattern,style in patterns:
+            match=re.search(pattern,content)
+            if not match:
+                continue
+            try:
+                day=(date.fromisoformat(match.group(1)) if style=="iso" else
+                     datetime.strptime(match.group(1),"%d.%m.%Y").date())
+            except ValueError:
+                continue
+            if 1900<=day.year<=2200:
+                return day.isoformat()
+        return None
+
+    @staticmethod
+    def _project_topic(content: str) -> str | None:
+        """Only explicit project names; never merge unrelated anonymous projects."""
+        match=re.search(
+            r"(?iu)\b(?:проект(?:а|ом|е)?|project|репозитор(?:ий|ия))\s+"
+            r"([a-zа-яё0-9][a-zа-яё0-9_-]{2,39})\b",content
+        )
+        if not match:
+            return None
+        candidate=match.group(1).casefold()
+        if candidate in {"для","над","это","мой","мои","новый","работаю","сделать","создать"}:
+            return None
+        return candidate
+
+    def rebuild_episodes(self) -> dict:
+        """Id-only daily episodes and explicit project checkpoints; no transcript copies.
+
+        Single BEGIN IMMEDIATE locks the snapshot and materialized index together.
+        Only source-linked *confirmed* user facts form chat episodes.
+        """
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows=conn.execute(
+                    "SELECT m.id,m.content,m.brain,m.conversation_id,m.created_at,"
+                    "m.updated_at,m.source_message_id,src.sent_at AS source_at "
+                    "FROM memory_items m LEFT JOIN messages src "
+                    "ON src.id=m.source_message_id AND src.role='user' "
+                    "AND src.conversation_id=m.conversation_id "
+                    "LEFT JOIN memory_excluded_sources excluded "
+                    "ON excluded.source_message_id=m.source_message_id "
+                    "WHERE m.status='confirmed' AND (m.expires_at IS NULL OR m.expires_at>?) "
+                    "AND excluded.source_message_id IS NULL "
+                    "ORDER BY m.updated_at DESC LIMIT 2000",(now(),)
+                ).fetchall()
+                grouped: dict[tuple[str,str],list[tuple[str,int]]] = {}
+                checkpoints=[]
+                for row in rows:
+                    if SECRET.search(row["content"]):
+                        continue
+                    if row["source_at"] is not None:
+                        day=datetime.fromtimestamp(row["source_at"]/1000,timezone.utc).date().isoformat()
+                        grouped.setdefault((row["conversation_id"],day),[]).append(
+                            (row["id"],row["source_at"])
+                        )
+                    if row["brain"] in ("projects","goals"):
+                        topic=self._project_topic(row["content"]) if row["brain"]=="projects" else None
+                        topic=("project:"+topic if topic else "item:"+row["id"])
+                        _,state=self._event_type(row["content"],row["brain"])
+                        checkpoints.append((row["id"],topic,state,
+                                            row["source_at"] or row["created_at"],row["updated_at"]))
+                conn.execute("DELETE FROM memory_episode_members")
+                conn.execute("DELETE FROM memory_episodes")
+                count=0
+                for (conversation,day),members in sorted(grouped.items())[:400]:
+                    episode_id=str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,"meiyuren:episode:"+conversation+":"+day
+                    ))
+                    start=min(x[1] for x in members)
+                    end=max(x[1] for x in members)
+                    conn.execute(
+                        "INSERT INTO memory_episodes VALUES(?,?,?,?,?,?)",
+                        (episode_id,conversation,day,start,end,now())
+                    )
+                    conn.executemany(
+                        "INSERT INTO memory_episode_members VALUES(?,?)",
+                        [(episode_id,memory_id) for memory_id,_ in members]
+                    )
+                    count+=1
+                conn.execute("DELETE FROM memory_project_checkpoints")
+                conn.executemany(
+                    "INSERT INTO memory_project_checkpoints VALUES(?,?,?,?,?)",
+                    checkpoints
+                )
+        return {"episodes":count,"checkpoints":len(checkpoints),"indexedFacts":len(rows)}
+
+    def episode_overview(self,conversation_id: str,cloud_mode: bool=False) -> dict:
+        """Reconstruct all visible text on read, verifying ACL and live source status."""
+        visible=self._visible_deep_rows(conversation_id,cloud_mode)
+        by_id={item["id"]:item for item in visible}
+        with closing(db.connection(self.path)) as conn:
+            episodes=conn.execute(
+                "SELECT e.id,e.conversation_id,e.day,e.started_at,e.ended_at,"
+                "em.memory_id FROM memory_episodes e "
+                "JOIN memory_episode_members em ON em.episode_id=e.id "
+                "WHERE e.conversation_id=? ORDER BY e.ended_at DESC,e.id LIMIT 1000",
+                (conversation_id,)
+            ).fetchall()
+            checkpoints=conn.execute(
+                "SELECT memory_id,project_key,state,observed_at FROM memory_project_checkpoints "
+                "ORDER BY observed_at DESC,memory_id LIMIT 500"
+            ).fetchall()
+        groups={}
+        for row in episodes:
+            item=by_id.get(row["memory_id"])
+            if item is None or item["sourceMessageId"] is None:
+                continue
+            group=groups.setdefault(
+                row["id"],dict(id=row["id"],day=row["day"],
+                               conversationId=row["conversation_id"],
+                               observedStart=row["started_at"],observedEnd=row["ended_at"],
+                               facts=[],short=[])
+            )
+            if len(group["facts"])<24:
+                group["facts"].append(item)
+            if len(group["short"])<3:
+                group["short"].append(item["content"])
+        items=[]
+        for item in by_id.values():
+            day=self._explicit_event_day(item["content"])
+            if day is not None:
+                items.append({"memoryId":item["id"],"eventDay":day,
+                              "observationAt":item["observedAt"]})
+        visible_checkpoints=[]
+        for r in checkpoints:
+            item=by_id.get(r["memory_id"])
+            if item is None:
+                continue
+            visible_checkpoints.append(dict(
+                memoryId=item["id"],projectKey=r["project_key"],
+                state=r["state"],observedAt=r["observed_at"],
+                content=item["content"],brain=item["brain"]
+            ))
+        # Latest checkpoint wins only for an EXPLICIT common project name.
+        latest={}
+        for row in visible_checkpoints:
+            latest.setdefault(row["projectKey"],row)
+        continuation=[
+            row for row in latest.values()
+            if row["state"]!="completed"
+        ][:20]
+        return {"episodes":list(groups.values())[:40],
+                "checkpoints":visible_checkpoints[:40],
+                "continuation":continuation,
+                "explicitEventDates":items[:40],
+                "count":len(groups),"cloudMode":cloud_mode}
+
     def rebuild_deep_index(self) -> dict:
         """Фоновая консолидация: только ID и состояния, без копий чувствительного текста."""
         with closing(db.connection(self.path)) as conn:
@@ -1484,7 +1672,8 @@ class MemoryEngine:
                     [(conversation,brain,json.dumps(ids),now())
                      for (conversation,brain),ids in outlines.items()]
                 )
-        return {"indexed":len(items),"outlines":len(outlines)}
+        episode_index=self.rebuild_episodes()
+        return {"indexed":len(items),"outlines":len(outlines),**episode_index}
 
     def _visible_deep_rows(self,conversation_id: str,cloud_mode: bool) -> list[dict]:
         policy=self.policy()
@@ -1550,6 +1739,13 @@ class MemoryEngine:
         continue_mode=self._continuation_query(query)
         lexical=self.recall(query,conversation_id,cloud_mode)
         base={row["id"] for row in lexical}
+        checkpoint_ids=set()
+        if continue_mode:
+            # A closed project must not be revived by an older "active" checkpoint.
+            checkpoint_ids={
+                point["memoryId"] for point in
+                self.episode_overview(conversation_id,cloud_mode)["continuation"]
+            }
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
@@ -1557,11 +1753,11 @@ class MemoryEngine:
             if row["brain"] in routed and shared:
                 relevance+=1.25
             if continue_mode and row["brain"] in ("projects","goals","decisions"):
-                relevance+=2.2
-                if row["eventState"]=="active":
-                    relevance+=1
+                relevance+=1.1
+                if row["id"] in checkpoint_ids:
+                    relevance+=3.8
                 if row["eventState"]=="completed":
-                    relevance-=1.4
+                    relevance-=2.5
             relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*0.35
             if relevance<=0:
                 continue
