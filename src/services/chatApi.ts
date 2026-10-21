@@ -52,6 +52,21 @@ export type DeepMemoryOverview = {
 export type DeepMemoryMetrics = {
   indexedEvents: number; search: { intent: string; searches: number; hits: number }[];
 };
+export type MemoryEpisode = {
+  id: string; day: string; conversationId: string;
+  observedStart: number; observedEnd: number;
+  short: string[]; facts: DeepMemoryFact[];
+};
+export type MemoryProjectCheckpoint = {
+  memoryId: string; projectKey: string; state: string;
+  observedAt: number; content: string; brain: MemoryBrain;
+};
+export type EpisodicMemoryOverview = {
+  episodes: MemoryEpisode[]; checkpoints: MemoryProjectCheckpoint[];
+  continuation: MemoryProjectCheckpoint[];
+  explicitEventDates: { memoryId: string; eventDay: string; observationAt: number }[];
+  count: number; cloudMode: boolean;
+};
 export type MemoryRecallPreview = { memories: MemoryFact[]; context: string };
 export type MemoryUsage = { memoryId: string; conversationId: string; cloudMode: boolean; selectedAt: number; content: string };
 export type ChatMatch = Message & { conversationId: string };
@@ -186,6 +201,19 @@ export async function clearMemoryNeuralVectors(): Promise<number> {
   return (await parse<{ deleted: number }>(
     await fetch('/api/memory/neural/vectors', { method: 'DELETE', headers }),
   )).deleted;
+}
+
+export async function getEpisodicMemoryOverview(
+  conversationId = 'main', cloudMode = false,
+): Promise<EpisodicMemoryOverview> {
+  const args = new URLSearchParams({ conversationId, cloudMode: String(cloudMode) });
+  return parse(await fetch('/api/memory/episodes?' + args.toString(), { cache: 'no-store' }));
+}
+
+export async function rebuildEpisodicMemory(): Promise<{
+  episodes: number; checkpoints: number; indexedFacts: number;
+}> {
+  return parse(await fetch('/api/memory/episodes/rebuild', { method: 'POST', headers }));
 }
 
 export async function getDeepMemoryOverview(
