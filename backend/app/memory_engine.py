@@ -772,6 +772,224 @@ class MemoryEngine:
         return [dict(revision=r["revision"],action=r["action"],content=r["content"],
                      createdAt=r["created_at"]) for r in rows]
 
+    # Five-brain association graph: shared topics and true neural similarities.
+    # All references resolve to confirmed records, never to AI guesses.
+    def _link_local(self, conn: sqlite3.Connection, item_id: str, content: str) -> None:
+        source=_keywords(content)
+        if not source:
+            return
+        matches=[]
+        rows=conn.execute(
+            "SELECT id,content FROM memory_items WHERE id!=? AND status='confirmed' "
+            "AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC LIMIT 500",
+            (item_id,now())
+        ).fetchall()
+        for row in rows:
+            words=_keywords(row["content"])
+            common=len(source & words)
+            union=len(source | words)
+            strength=common / union if union else 0.0
+            if common and strength>=0.15:
+                matches.append((row["id"],strength))
+        for other,weight in sorted(matches,key=lambda v:v[1],reverse=True)[:8]:
+            left,right=sorted((item_id,other))
+            conn.execute("INSERT OR REPLACE INTO memory_links VALUES(?,?,?,?,?)",
+                         (left,right,"shared_topic",round(weight,4),now()))
+
+    def brains(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT brain,COUNT(*) AS total FROM memory_items "
+                "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?) GROUP BY brain",
+                (now(),)
+            ).fetchall()
+            links=conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0]
+            neural=conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0]
+        counts={name:0 for name in BRAINS}
+        counts.update({r["brain"]:r["total"] for r in rows if r["brain"] in BRAINS})
+        return {"brains":counts,"links":links,"neuralVectors":neural,
+                "embeddingModel":EMBED_MODEL,"embeddingDimensions":EMBED_DIMS}
+
+    def connections(self, item_id: str) -> list[dict]:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.*,l.relation,l.weight FROM memory_links l "
+                "JOIN memory_items m ON m.id=CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END "
+                "WHERE (l.left_id=? OR l.right_id=?) AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY l.weight DESC LIMIT 20",
+                (item_id,item_id,item_id,now())
+            ).fetchall()
+        return [{"item":self._item(r),"relation":r["relation"],"weight":r["weight"]} for r in rows]
+
+    @staticmethod
+    def _uuid(value: str) -> str:
+        try:
+            if str(uuid.UUID(value)) != value:
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Некорректный идентификатор запроса.") from None
+        return value
+
+    def _reserve_embedding(self, request_id: str, item_id: str, content: str) -> None:
+        self._uuid(request_id)
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                created=conn.execute(
+                    "INSERT OR IGNORE INTO memory_embedding_requests "
+                    "(request_id,item_id,content_digest,model,status,created_at) "
+                    "VALUES(?,?,?,?, 'pending',?)",
+                    (request_id,item_id,digest(content),EMBED_MODEL,now())
+                ).rowcount
+                if not created:
+                    raise ValueError("Этот запрос уже использован. Повторная платная отправка заблокирована.")
+
+    def _finish_embedding(self,request_id: str,status: str) -> None:
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("UPDATE memory_embedding_requests SET status=? WHERE request_id=?",
+                             (status,request_id))
+
+    @staticmethod
+    async def _call_embed(text: str) -> list[float]:
+        """One explicit potentially paid request. Never retry silently."""
+        from . import cloud
+        key=cloud.required_key()
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=12.0,read=30.0,write=15.0,pool=12.0),
+                follow_redirects=False
+            ) as client:
+                response=await client.post(
+                    cloud.BASE_URL+"/embeddings",
+                    headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                    json={"model":EMBED_MODEL,"input":text}
+                )
+                response.raise_for_status()
+                result=response.json()
+            entries=result.get("data") if isinstance(result,dict) else None
+            embedding=entries[0].get("embedding") if isinstance(entries,list) and len(entries)==1 and isinstance(entries[0],dict) else None
+            if not isinstance(embedding,list) or len(embedding)!=EMBED_DIMS:
+                raise cloud.CloudError("Embedding-модель вернула несовместимую размерность.",502)
+            if any(isinstance(x,bool) or not isinstance(x,(float,int))
+                   or not math.isfinite(x) or abs(x)>100 for x in embedding):
+                raise cloud.CloudError("Embedding-модель вернула некорректные значения.",502)
+            vector=[float(x) for x in embedding]
+            if _cosine(vector,vector)<0.99:
+                raise cloud.CloudError("Embedding-модель вернула пустой вектор.",502)
+            return vector
+        except cloud.CloudError:
+            raise
+        except (ValueError,TypeError,KeyError):
+            raise cloud.CloudError("Cloud.ru вернул некорректный ответ embedding-модели.",502) from None
+        except httpx.HTTPError as exc:
+            raise cloud.request_error(exc) from None
+
+    async def embed_item(self,item_id: str,request_id: str) -> dict:
+        """Explicit paid operation; two independent consents + request UUID."""
+        from . import cloud
+        if not self.policy()["allow_cloud_embeddings"]:
+            raise ValueError("Нейроиндексация Cloud.ru отключена в настройках памяти.")
+        with closing(db.connection(self.path)) as conn:
+            row=conn.execute(
+                "SELECT * FROM memory_items WHERE id=? AND status='confirmed' "
+                "AND (expires_at IS NULL OR expires_at>?)",(item_id,now())
+            ).fetchone()
+            if row is None:
+                raise ValueError("Воспоминание отсутствует или устарело.")
+            if not row["cloud_allowed"] or SECRET.search(row["content"]):
+                raise ValueError("Это воспоминание нельзя передавать Cloud.ru.")
+            saved=conn.execute("SELECT model,content_digest FROM memory_vectors WHERE item_id=?",
+                               (item_id,)).fetchone()
+            if saved and saved["model"]==EMBED_MODEL and saved["content_digest"]==digest(row["content"]):
+                return {"status":"indexed","cached":True,"itemId":item_id}
+            content=row["content"]
+        self._reserve_embedding(request_id,item_id,content)
+        try:
+            vector=await self._call_embed(content)
+            with closing(db.connection(self.path)) as conn:
+                with conn:
+                    # Recheck consent, deletion, edits after the cloud request.
+                    item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+                    if (item is None or item["status"]!="confirmed"
+                            or not item["cloud_allowed"] or item["expires_at"] is not None and item["expires_at"]<=now()
+                            or digest(item["content"])!=digest(content)
+                            or not self.policy()["allow_cloud_embeddings"]):
+                        conn.execute("UPDATE memory_embedding_requests SET status='done' WHERE request_id=?",
+                                     (request_id,))
+                        return {"status":"discarded","cached":False,"itemId":item_id}
+                    conn.execute("INSERT OR REPLACE INTO memory_vectors VALUES(?,?,?,?,?,?)",
+                                 (item_id,EMBED_MODEL,digest(content),
+                                  json.dumps(vector,separators=(",",":")),len(vector),now()))
+                    conn.execute("DELETE FROM memory_links WHERE relation='neural_similarity' "
+                                 "AND (left_id=? OR right_id=?)",(item_id,item_id))
+                    others=conn.execute(
+                        "SELECT v.item_id,v.vector_json FROM memory_vectors v "
+                        "JOIN memory_items m ON m.id=v.item_id "
+                        "WHERE v.item_id!=? AND v.model=? AND v.dimensions=? AND m.status='confirmed' "
+                        "AND m.cloud_allowed=1 AND (m.expires_at IS NULL OR m.expires_at>?) "
+                        "ORDER BY v.created_at DESC LIMIT 300",
+                        (item_id,EMBED_MODEL,EMBED_DIMS,now())
+                    ).fetchall()
+                    neighbors=[]
+                    for other in others:
+                        value=_cosine(vector,json.loads(other["vector_json"]))
+                        if value>=0.78:
+                            neighbors.append((other["item_id"],value))
+                    for other,weight in sorted(neighbors,key=lambda value:value[1],reverse=True)[:8]:
+                        left,right=sorted((item_id,other))
+                        conn.execute("INSERT OR REPLACE INTO memory_links VALUES(?,?,?,?,?)",
+                                     (left,right,"neural_similarity",round(weight,4),now()))
+                    conn.execute("UPDATE memory_embedding_requests SET status='done' WHERE request_id=?",
+                                 (request_id,))
+            return {"status":"indexed","cached":False,"itemId":item_id}
+        except Exception:
+            self._finish_embedding(request_id,"unknown")
+            raise
+
+    async def neural_search(self,query: str,conversation_id: str,request_id: str) -> list[dict]:
+        """Neural query is EXPLICIT and potentially paid. No background paid recall."""
+        if not self.policy()["allow_cloud_embeddings"]:
+            raise ValueError("Нейропоиск Cloud.ru отключён.")
+        if not 2<=len(query)<=200 or SECRET.search(query):
+            raise ValueError("Недопустимый поисковый запрос.")
+        with closing(db.connection(self.path)) as conn:
+            exists=conn.execute("SELECT 1 FROM conversations WHERE id=?",(conversation_id,)).fetchone()
+            if not exists:
+                raise ValueError("Диалог не найден.")
+        self._reserve_embedding(request_id,"query",query)
+        try:
+            vector=await self._call_embed(query)
+            with closing(db.connection(self.path)) as conn:
+                rows=conn.execute(
+                    "SELECT m.*,v.vector_json FROM memory_vectors v "
+                    "JOIN memory_items m ON m.id=v.item_id WHERE v.model=? AND v.dimensions=? "
+                    "AND v.content_digest=m.fingerprint AND m.status='confirmed' "
+                    "AND m.cloud_allowed=1 AND (m.conversation_id='global' OR m.conversation_id=?) "
+                    "AND (m.expires_at IS NULL OR m.expires_at>?) LIMIT 1000",
+                    (EMBED_MODEL,EMBED_DIMS,conversation_id,now())
+                ).fetchall()
+            result=[]
+            for row in rows:
+                if SECRET.search(row["content"]):
+                    continue
+                similarity=_cosine(vector,json.loads(row["vector_json"]))
+                if similarity>=0.4:
+                    result.append({"item":self._item(row),"similarity":round(similarity,4)})
+            self._finish_embedding(request_id,"done")
+            return sorted(result,key=lambda x:x["similarity"],reverse=True)[:10]
+        except Exception:
+            self._finish_embedding(request_id,"unknown")
+            raise
+
+    def delete_vectors(self) -> int:
+        """Delete local embeddings and neural graph while retaining facts."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                count=conn.execute("DELETE FROM memory_vectors").rowcount
+                conn.execute("DELETE FROM memory_links WHERE relation='neural_similarity'")
+        return count
+
     def status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             confirmed=conn.execute("SELECT COUNT(*) FROM memory_items WHERE status='confirmed'").fetchone()[0]
