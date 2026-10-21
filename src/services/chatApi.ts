@@ -1,7 +1,9 @@
 import type { Message } from '../store/useAppStore';
 
 export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number };
-export type MemoryBrain = 'identity' | 'episodes' | 'goals' | 'habits' | 'knowledge';
+export type MemoryBrain =
+  | 'identity' | 'episodes' | 'goals' | 'habits' | 'knowledge'
+  | 'relationships' | 'projects' | 'decisions';
 export type MemoryNetwork = {
   brains: Record<MemoryBrain, number>; links: number; neuralVectors: number;
   embeddingModel: string; embeddingDimensions: number;

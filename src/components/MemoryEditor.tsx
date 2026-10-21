@@ -16,6 +16,7 @@ import { useAppStore } from '../store/useAppStore';
 const BRAIN_NAMES: Record<MemoryBrain, string> = {
   identity: 'Личность', episodes: 'События', goals: 'Цели',
   habits: 'Привычки', knowledge: 'Знания',
+  relationships: 'Отношения', projects: 'Проекты', decisions: 'Решения',
 };
 
 export function MemoryEditor({ active }: { active: boolean }) {
@@ -240,7 +241,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
           <span>Связей: {status.network.links}</span>
           <span>Нейровекторов: {status.network.neuralVectors}</span>
         </div>
-        <h4>Пять связанных мозгов долгосрочной памяти</h4>
+        <h4>Восемь связанных мозгов долгосрочной памяти</h4>
         <div className="memory-core__brains">
           {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(key => <div key={key}>
             <strong>{BRAIN_NAMES[key]}</strong>
@@ -251,7 +252,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       <button type="button" disabled={busy} onClick={() => void action(async () => {
         const links = await rebuildMemoryBrainLinks();
         return 'Локальных связей перестроено: ' + links + '. Cloud.ru не использовался.';
-      })}>Перестроить связи пяти мозгов</button>
+      })}>Перестроить связи восьми мозгов</button>
       <button type="button" disabled={busy} onClick={() => void action(async () => {
         const result = await processMemoryJobs();
         return 'Локально обработано задач: ' + result.processed;
@@ -345,7 +346,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       </ul>
 
       {connectedSource && <section className="memory-core__explanation">
-        <h4>Связи пяти мозгов</h4>
+        <h4>Связи восьми мозгов</h4>
         <p>Исходное воспоминание: {connectedSource}</p>
         {connections.length === 0 && <p>Пока нет связанных воспоминаний.</p>}
         <ul className="memory-core__list">
