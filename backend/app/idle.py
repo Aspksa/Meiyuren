@@ -281,7 +281,8 @@ class IdleRuntime:
             return {"state": "off"}
         model = semantic.model_for(self.path)
         if not model.ready:
-            model.start_loading(allow_download=True)
+            model.start_loading(allow_download=True,
+                                then=lambda: self.engine.semantic_index(model))
             return model.status()
         try:
             return {"state": "ready", **self.engine.semantic_index(model)}

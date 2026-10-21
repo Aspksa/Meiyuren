@@ -150,3 +150,24 @@ def test_idle_status_reports_model_download(app):
     status = client.get("/api/idle/status").json()
     assert status["modelDownload"] in {"off", "pending", "done"}
     assert status["externalCalls"] is False
+
+
+def test_model_is_ready_only_after_full_load_and_then_indexes(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeEmbedding:
+        def __init__(self, name, cache_dir, local_files_only):
+            calls.append(local_files_only)
+            (tmp_path / "models" / "model.onnx").write_bytes(b"")
+
+    monkeypatch.setattr(semantic, "TextEmbedding", FakeEmbedding)
+    model = semantic.SemanticModel(tmp_path / "models")
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "partial.onnx").write_bytes(b"")
+    assert not model.downloaded()  # обрыв скачивания: одного .onnx мало
+    assert not model.load(allow_download=False)
+    done = []
+    model._then = lambda: done.append(True)
+    model._load_then(True)
+    assert calls == [False]  # скачивание разрешено только этому вызову
+    assert model.ready and model.downloaded() and done == [True]

@@ -15,6 +15,11 @@ import threading
 
 MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DIMENSIONS = 384
+# Метка модели в отпечатке вектора: смена модели или её файлов пересчитывает все векторы.
+REVISION = 1
+VERSION = f"{MODEL}@{REVISION}:"
+# Пишется только после полной загрузки: обрыв скачивания не считается готовой моделью.
+COMPLETE = ".meiyuren-complete"
 # Сходство, при котором факт подходит к вопросу без общих слов («кофе» → «эспрессо»).
 MATCH = 0.55
 
@@ -30,6 +35,7 @@ class SemanticModel:
         self._lock = threading.Lock()
         self._model = None
         self._loader: threading.Thread | None = None
+        self._then = None
         self.state = "not-installed" if TextEmbedding is None else "not-loaded"
         self.error: str | None = None
 
@@ -38,7 +44,10 @@ class SemanticModel:
         return self._model is not None
 
     def downloaded(self) -> bool:
-        return self.folder.is_dir() and any(self.folder.rglob("*.onnx"))
+        try:
+            return (self.folder / COMPLETE).read_text(encoding="utf-8") == VERSION
+        except OSError:
+            return False
 
     def load(self, *, allow_download: bool) -> bool:
         """Загрузить модель; скачивание разрешено только из режима простоя."""
@@ -55,6 +64,7 @@ class SemanticModel:
                 # Без разрешения на скачивание библиотека не идёт в сеть даже при неполном кэше.
                 self._model = TextEmbedding(MODEL, cache_dir=str(self.folder),
                                             local_files_only=not allow_download)
+                (self.folder / COMPLETE).write_text(VERSION, encoding="utf-8")
                 self.state, self.error = "ready", None
             except Exception as exc:  # сеть, диск, повреждённый файл — пробуем в другой раз
                 logging.getLogger(__name__).warning("Модель смысла не загрузилась: %s", exc)
@@ -62,17 +72,28 @@ class SemanticModel:
                 return False
         return True
 
-    def start_loading(self, *, allow_download: bool) -> bool:
-        """Загрузка в отдельном потоке: скачивание не задерживает разбор сообщений."""
+    def start_loading(self, *, allow_download: bool, then=None) -> bool:
+        """Загрузка в отдельном потоке: скачивание не задерживает разбор сообщений.
+
+        then — что сделать сразу после загрузки (режим простоя считает векторы, не дожидаясь
+        следующего запуска через полчаса)."""
         if self._model is not None:
             return True
         if TextEmbedding is None or (not allow_download and not self.downloaded()):
             return False
         if self._loader is None or not self._loader.is_alive():
-            self._loader = threading.Thread(target=self.load, kwargs={"allow_download": allow_download},
+            self._then = then
+            self._loader = threading.Thread(target=self._load_then, args=(allow_download,),
                                             name="meiyuren-semantic", daemon=True)
             self._loader.start()
         return False
+
+    def _load_then(self, allow_download: bool) -> None:
+        if self.load(allow_download=allow_download) and self._then is not None:
+            try:
+                self._then()
+            except Exception as exc:  # индексация повторится в следующем простое
+                logging.getLogger(__name__).warning("Векторы смысла не посчитались: %s", exc)
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         if self._model is None:

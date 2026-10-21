@@ -3005,20 +3005,22 @@ class MemoryEngine:
             rows=conn.execute(
                 "SELECT m.id,m.content,m.fingerprint FROM memory_items m "
                 "LEFT JOIN memory_semantic_vectors v ON v.item_id=m.id "
-                "WHERE m.status='confirmed' AND (v.item_id IS NULL OR v.digest!=m.fingerprint) "
-                "LIMIT ?",(limit,)).fetchall()
+                "WHERE m.status='confirmed' AND (v.item_id IS NULL OR v.digest!=?||m.fingerprint) "
+                "LIMIT ?",(semantic.VERSION,limit)).fetchall()
         rows=[r for r in rows if not SECRET.search(r["content"])]
         values=[]
         if rows:
             vectors=model.encode([r["content"] for r in rows])
-            values=[(r["id"],r["fingerprint"],semantic.pack(v),now()) for r,v in zip(rows,vectors)]
+            # Версия модели в отпечатке: векторы другой модели не сравниваются с новыми.
+            values=[(r["id"],semantic.VERSION+r["fingerprint"],semantic.pack(v),now())
+                    for r,v in zip(rows,vectors)]
         with closing(db.connection(self.path)) as conn:
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 for value in values:
                     # Факт мог быть забыт, пока считался вектор: записываем только живые.
                     if conn.execute("SELECT 1 FROM memory_items WHERE id=? AND status='confirmed' "
-                                    "AND fingerprint=?",(value[0],value[1])).fetchone():
+                                    "AND ?||fingerprint=?",(value[0],semantic.VERSION,value[1])).fetchone():
                         conn.execute("INSERT OR REPLACE INTO memory_semantic_vectors VALUES(?,?,?,?)",value)
                 conn.execute("DELETE FROM memory_semantic_vectors WHERE item_id NOT IN "
                              "(SELECT id FROM memory_items WHERE status='confirmed')")
@@ -3036,7 +3038,8 @@ class MemoryEngine:
         with closing(db.connection(self.path)) as conn:
             # Только векторы текущей версии факта: после правки старый вектор не подходит.
             rows=conn.execute("SELECT v.item_id,v.vector FROM memory_semantic_vectors v "
-                              "JOIN memory_items m ON m.id=v.item_id AND m.fingerprint=v.digest").fetchall()
+                              "JOIN memory_items m ON m.id=v.item_id AND v.digest=?||m.fingerprint",
+                              (semantic.VERSION,)).fetchall()
         return {r[0]:semantic.similarity(probe,semantic.unpack(r[1])) for r in rows}
 
     def status(self) -> dict:
