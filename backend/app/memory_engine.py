@@ -543,6 +543,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                                 (target,target))
                     conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
                                  "WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
@@ -907,6 +909,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
                                  (item["id"],item["id"]))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item["id"],))
+                    conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
+                                 (item["id"],item["id"]))
                 conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
                              "WHERE item_id IN (SELECT id FROM memory_items WHERE conversation_id=?)",
                              (conversation_id,))
@@ -1116,6 +1120,13 @@ class MemoryEngine:
                 conn.execute(
                     "DELETE FROM memory_summaries WHERE conversation_id NOT IN "
                     "(SELECT id FROM conversations)"
+                )
+                conn.execute(
+                    "DELETE FROM memory_synaptic_weights WHERE "
+                    "left_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?)) OR "
+                    "right_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?))",(ts,ts)
                 )
         self.grow_branches()
         self.rebuild_deep_index()
@@ -1901,19 +1912,27 @@ class MemoryEngine:
                 point["memoryId"] for point in
                 self.episode_overview(conversation_id,cloud_mode)["continuation"]
             }
+        strategy=self.evolution_status()["strategy"]
+        strategy_weights={
+            "balanced":(3.0,1.25,0.35),
+            "focused":(4.0,0.60,0.20),
+            "context":(2.50,2.00,0.45),
+        }
+        word_weight,route_weight,feedback_weight=strategy_weights.get(
+            strategy,strategy_weights["balanced"])
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
-            relevance=shared*3.0+(2.0 if row["id"] in base else 0)
+            relevance=shared*word_weight+(2.0 if row["id"] in base else 0)
             if row["brain"] in routed and shared:
-                relevance+=1.25
+                relevance+=route_weight
             if continue_mode and row["brain"] in ("projects","goals","decisions"):
                 relevance+=1.1
                 if row["id"] in checkpoint_ids:
                     relevance+=3.8
                 if row["eventState"]=="completed":
                     relevance-=2.5
-            relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*0.35
+            relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*feedback_weight
             if relevance<=0:
                 continue
             scored.append((relevance,row["updatedAt"],row))
@@ -1931,7 +1950,10 @@ class MemoryEngine:
                 for seed in frontier[:12]:
                     neighbors=conn.execute(
                         "SELECT CASE WHEN left_id=? THEN right_id ELSE left_id END AS neighbor,"
-                        "weight FROM memory_links WHERE left_id=? OR right_id=? "
+                        "MAX(0,MIN(1,l.weight+COALESCE(s.adjustment,0))) AS weight "
+                        "FROM memory_links l LEFT JOIN memory_synaptic_weights s "
+                        "ON s.left_id=l.left_id AND s.right_id=l.right_id "
+                        "WHERE l.left_id=? OR l.right_id=? "
                         "ORDER BY weight DESC LIMIT 10",(seed,seed,seed)
                     ).fetchall()
                     for link in neighbors:
@@ -2000,6 +2022,28 @@ class MemoryEngine:
                     (item_id,int(helpful),int(not helpful),now())
                 )
                 r=conn.execute("SELECT * FROM memory_deep_feedback WHERE memory_id=?",(item_id,)).fetchone()
+                # Only explicit user feedback adjusts synapses. Automatically selected
+                # memories are NOT assumed correct merely because they were retrieved.
+                edges=conn.execute(
+                    "SELECT left_id,right_id FROM memory_links "
+                    "WHERE left_id=? OR right_id=? LIMIT 12",(item_id,item_id)
+                ).fetchall()
+                for edge in edges:
+                    pair=tuple(sorted((edge["left_id"],edge["right_id"])))
+                    old=conn.execute(
+                        "SELECT adjustment,observations FROM memory_synaptic_weights "
+                        "WHERE left_id=? AND right_id=?",pair
+                    ).fetchone()
+                    adjustment=max(-0.4,min(0.4,
+                        (old["adjustment"] if old else 0)+(0.04 if helpful else -0.04)))
+                    conn.execute(
+                        "INSERT INTO memory_synaptic_weights VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(left_id,right_id) DO UPDATE SET "
+                        "adjustment=excluded.adjustment,observations=excluded.observations,"
+                        "updated_at=excluded.updated_at",
+                        (pair[0],pair[1],round(adjustment,3),
+                         (old["observations"] if old else 0)+1,now())
+                    )
         return {"memoryId":item_id,"helpful":r["helpful"],"unhelpful":r["unhelpful"]}
 
     def deep_metrics(self) -> dict:
@@ -2035,4 +2079,4 @@ class MemoryEngine:
             branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
                     policy=self.policy(),network=self.brains(),autonomousBranches=branches,
-                    deep=self.deep_metrics())
+                    deep=self.deep_metrics(),evolution=self.evolution_status())
