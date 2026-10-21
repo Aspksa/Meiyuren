@@ -8,6 +8,11 @@ export type MemoryNetwork = {
   brains: Record<MemoryBrain, number>; links: number; neuralVectors: number;
   embeddingModel: string; embeddingDimensions: number;
 };
+export type MemoryBranch = {
+  id: string; parentId: string | null; brain: MemoryBrain; term: string;
+  title: string; depth: number; support: number;
+};
+export type MemoryTree = { roots: MemoryBrain[]; branches: MemoryBranch[] };
 export type MemoryConnection = { item: MemoryFact; relation: 'shared_topic' | 'neural_similarity'; weight: number };
 export type MemoryNeuralMatch = { item: MemoryFact; similarity: number };
 export type MemoryFact = {
@@ -25,9 +30,11 @@ export type MemorySummary = {
 export type MemoryPolicy = {
   allow_cloud_notes: boolean; allow_cloud_facts: boolean;
   auto_extract: boolean; auto_summaries: boolean; allow_cloud_embeddings: boolean;
+  auto_growth: boolean;
 };
 export type MemoryStatus = {
-  facts: number; pending: number; jobs: number; summaries: number; policy: MemoryPolicy; network: MemoryNetwork;
+  facts: number; pending: number; jobs: number; summaries: number;
+  policy: MemoryPolicy; network: MemoryNetwork; autonomousBranches: number;
 };
 export type MemoryExplanation = {
   item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
@@ -127,6 +134,14 @@ export async function rebuildMemoryBrainLinks(): Promise<number> {
   return (await parse<{ links: number }>(await fetch('/api/memory/brains/rebuild', {
     method: 'POST', headers,
   }))).links;
+}
+
+export async function getMemoryTree(): Promise<MemoryTree> {
+  return parse(await fetch('/api/memory/tree', { cache: 'no-store' }));
+}
+
+export async function rebuildMemoryTree(): Promise<{ roots: number; branches: number; scanned: number }> {
+  return parse(await fetch('/api/memory/tree/rebuild', { method: 'POST', headers }));
 }
 
 export async function getMemoryBrains(): Promise<MemoryNetwork> {
