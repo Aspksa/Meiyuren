@@ -274,6 +274,10 @@ class MemoryEngine:
                     PRIMARY KEY(branch_id, memory_id)
                 )""")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_branch_members_memory ON memory_branch_members(memory_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_growth_maintenance (
+                    id INTEGER PRIMARY KEY CHECK(id=1), last_run INTEGER NOT NULL DEFAULT 0
+                )""")
+                conn.execute("INSERT OR IGNORE INTO memory_growth_maintenance(id) VALUES(1)")
                 for root in BRAINS:
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_branches "
@@ -576,7 +580,9 @@ class MemoryEngine:
                         (str(uuid.uuid4()),user["id"],conversation_id,ts))
 
     def process_pending(self,limit: int=10) -> int:
-        """Единственный локальный worker; lease позволяет восстановиться после перезапуска."""
+        """Один локальный worker обслуживает обучение, ветвление и периодическую очистку."""
+        if self.policy()["auto_growth"]:
+            self.maintain()
         done=0
         for _ in range(min(limit,50)):
             with closing(db.connection(self.path)) as conn:
@@ -772,12 +778,15 @@ class MemoryEngine:
                     ).fetchone() for item in selected
                 ):
                     return  # забытый факт не возвращается через гонку фоновой сводки
+                # Выписка построена ТОЛЬКО из подтверждённых фактов с живыми источниками.
+                # При автономном режиме она одобряется локально, но не получает Cloud-доступ.
+                status="approved" if self.policy()["auto_growth"] else "draft"
                 conn.execute(
                     "INSERT INTO memory_summaries(conversation_id,content,source_message_id,status,updated_at) "
-                    "VALUES(?,?,?,'draft',?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
                     "content=excluded.content,source_message_id=excluded.source_message_id,"
-                    "status='draft',cloud_allowed=0,updated_at=excluded.updated_at",
-                    (conversation_id,content,source_id,now()))
+                    "status=excluded.status,cloud_allowed=0,updated_at=excluded.updated_at",
+                    (conversation_id,content,source_id,status,now()))
 
     def summaries(self) -> list[dict]:
         with closing(db.connection(self.path)) as conn:
@@ -961,6 +970,44 @@ class MemoryEngine:
 
     # Five-brain association graph: shared topics and true neural similarities.
     # All references resolve to confirmed records, never to AI guesses.
+    def maintain(self) -> bool:
+        """Периодически удалять устаревшие нейровекторы и развивать только живые ветви.
+
+        Пересборка выполняется не чаще раза в 30 минут при работающем приложении.
+        Никакого Cloud.ru, новых фактов или повторных платных запросов.
+        """
+        ts=now()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                last=conn.execute(
+                    "SELECT last_run FROM memory_growth_maintenance WHERE id=1"
+                ).fetchone()
+                if last and ts-last["last_run"]<30*60*1000:
+                    return False
+                conn.execute(
+                    "UPDATE memory_growth_maintenance SET last_run=? WHERE id=1",(ts,)
+                )
+                conn.execute(
+                    "DELETE FROM memory_vectors WHERE item_id IN "
+                    "(SELECT id FROM memory_items WHERE status!='confirmed' "
+                    "OR (expires_at IS NOT NULL AND expires_at<=?) OR cloud_allowed=0)",
+                    (ts,)
+                )
+                conn.execute(
+                    "DELETE FROM memory_links WHERE left_id NOT IN "
+                    "(SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?)) "
+                    "OR right_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?))",
+                    (ts,ts)
+                )
+                conn.execute(
+                    "DELETE FROM memory_summaries WHERE conversation_id NOT IN "
+                    "(SELECT id FROM conversations)"
+                )
+        self.grow_branches()
+        return True
+
     def grow_branches(self) -> dict:
         """Полностью локальное саморазвитие дерева памяти по повторяющимся темам.
 
