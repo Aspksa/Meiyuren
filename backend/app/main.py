@@ -53,6 +53,7 @@ class MemoryPolicyInput(BaseModel):
     auto_extract: bool | None = None
     auto_summaries: bool | None = None
     allow_cloud_embeddings: bool | None = None
+    auto_growth: bool | None = None
 
 
 class MemoryReviewInput(BaseModel):
@@ -123,7 +124,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.10.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.11.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -402,6 +403,15 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.get("/api/memory/usage")
     def memory_usage():
         return {"entries": engine.usage()}
+
+    @app.get("/api/memory/tree")
+    def autonomous_memory_tree():
+        return engine.branch_tree()
+
+    @app.post("/api/memory/tree/rebuild")
+    def rebuild_autonomous_memory_tree():
+        # Локальная детерминированная пересборка; без Cloud.ru и платных вызовов.
+        return engine.grow_branches()
 
     @app.post("/api/memory/brains/rebuild")
     def rebuild_brain_links():

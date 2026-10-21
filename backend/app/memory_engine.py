@@ -27,6 +27,22 @@ BRAINS = (
 )
 EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBED_DIMS = 1024
+MAX_BRANCH_DEPTH = 4
+MAX_BRANCH_CHILDREN = 8
+BRANCH_SCAN_LIMIT = 500
+# Automatically accepted facts must be direct user statements, never AI output,
+# quoted third-party instructions or suspected private data.
+AUTO_DIRECT = re.compile(
+    r"(?iu)^\s*(?:я\s+)?(?:изучаю|учу|разрабатываю|работаю\s+над|"
+    r"планирую|собираюсь|хочу|решил|решила|обычно|регулярно|"
+    r"каждый\s+день|каждое\s+утро|мой\s+проект|моя\s+цель)\b"
+)
+AUTO_PRIVATE = re.compile(
+    r"(?iu)\b(?:диагноз|болею|болезнь|здоровье|лечусь|лечени[ея]|"
+    r"медицинск\w*|паспорт|снилс|инн|адрес|квартира|телефон|"
+    r"банк|банковск\w*|сч[её]т|кредит|долг|зарплата|доход|"
+    r"политическ\w*|религи\w*|сексуальн\w*|интимн\w*)\b"
+)
 
 
 def classify_brain(content: str) -> str:
@@ -240,6 +256,35 @@ class MemoryEngine:
                 policy_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_policy)")}
                 if "allow_cloud_embeddings" not in policy_columns:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
+                if "auto_growth" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_growth INTEGER NOT NULL DEFAULT 1")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    root_brain TEXT NOT NULL,
+                    term TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    depth INTEGER NOT NULL CHECK(depth BETWEEN 0 AND 4),
+                    support INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    UNIQUE(parent_id, term)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_branch_members (
+                    branch_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+                    PRIMARY KEY(branch_id, memory_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_branch_members_memory ON memory_branch_members(memory_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_growth_maintenance (
+                    id INTEGER PRIMARY KEY CHECK(id=1), last_run INTEGER NOT NULL DEFAULT 0
+                )""")
+                conn.execute("INSERT OR IGNORE INTO memory_growth_maintenance(id) VALUES(1)")
+                for root in BRAINS:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_branches "
+                        "(id,parent_id,root_brain,term,title,depth,support,updated_at) "
+                        "VALUES(?,NULL,?,?,?,0,0,?)",
+                        (root,root,root,root,now())
+                    )
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_links (
                     left_id TEXT NOT NULL, right_id TEXT NOT NULL,
                     relation TEXT NOT NULL CHECK (relation IN ('shared_topic','neural_similarity')),
@@ -296,14 +341,17 @@ class MemoryEngine:
                         "ORDER BY updated_at DESC LIMIT 300"
                     ).fetchall():
                         self._link_local(conn,item["id"],item["content"])
+        # Подключаем старые подтверждённые факты к дереву при первом запуске v0.11.
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -349,6 +397,8 @@ class MemoryEngine:
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
                 self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return self._item(row)
 
     def edit(self, item_id: str, *, content: str, cloud_allowed: bool, revision: int,
@@ -382,6 +432,8 @@ class MemoryEngine:
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
                 self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return self._item(row)
 
     def forget(self, item_id: str) -> bool:
@@ -428,6 +480,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_items WHERE id=?",(target,))
                 # Связанная с историей память могла попасть в любую выписку.
                 conn.execute("DELETE FROM memory_summaries")
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -501,6 +555,8 @@ class MemoryEngine:
                             conn.execute("DELETE FROM memory_summaries")
                 conn.execute("UPDATE memory_candidates SET status='approved' WHERE id=?",(candidate_id,))
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return dict(approved=True,item=self._item(item))
 
     def observe(self,exchange: dict,conversation_id: str) -> None:
@@ -524,7 +580,9 @@ class MemoryEngine:
                         (str(uuid.uuid4()),user["id"],conversation_id,ts))
 
     def process_pending(self,limit: int=10) -> int:
-        """Единственный локальный worker; lease позволяет восстановиться после перезапуска."""
+        """Один локальный worker обслуживает обучение, ветвление и периодическую очистку."""
+        if self.policy()["auto_growth"]:
+            self.maintain()
         done=0
         for _ in range(min(limit,50)):
             with closing(db.connection(self.path)) as conn:
@@ -565,56 +623,117 @@ class MemoryEngine:
         return done
 
     def _extract(self,message_id: str,conversation_id: str) -> None:
+        """Без запросов к LLM: автоматически сохранять только явные безопасные утверждения.
+
+        Пользователь не получает очередь предложений при auto_growth=True.
+        Сомнительные/чувствительные данные не записываются в память вообще.
+        Облачная передача ВСЕГДА запрещена для автоматически созданных записей.
+        """
+        policy=self.policy()
+        autonomous=policy["auto_growth"]
+        changed=False
         with closing(db.connection(self.path)) as conn:
-            msg=conn.execute("SELECT text FROM messages WHERE id=? AND role='user' AND conversation_id=?",
-                             (message_id,conversation_id)).fetchone()
-            if not msg:
-                return
-            text=msg["text"].strip()
-            if SECRET.search(text):
-                return
-            explicit=EXPLICIT.match(text)
-            implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
-            candidate=(explicit or implicit)
-            if not candidate:
-                return
-            content=(candidate.group(1) if explicit else text).strip().rstrip(".")
-            if not 4<=len(content)<=400 or SECRET.search(content):
-                return
-            fingerprint=digest(content)
-            if conn.execute("SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)).fetchone():
-                return
-            if conn.execute("SELECT 1 FROM memory_items WHERE fingerprint=? AND status='confirmed'",
-                            (fingerprint,)).fetchone():
-                return
-            if conn.execute("SELECT 1 FROM memory_candidates WHERE fingerprint=? AND status='pending'",
-                            (fingerprint,)).fetchone():
-                return
-            # Конфликт признаём только при явном совпадении темы и противоположной полярности.
-            new_topic=preference_topic(content)
-            conflict_with=None
-            if new_topic:
-                existing=conn.execute(
-                    "SELECT id,content FROM memory_items WHERE status='confirmed' "
-                    "AND (conversation_id='global' OR conversation_id=?)",(conversation_id,)
-                ).fetchall()
-                for item in existing:
-                    old_topic=preference_topic(item["content"])
-                    if old_topic and old_topic[0]==new_topic[0] and old_topic[1]!=new_topic[1]:
-                        conflict_with=item["id"]
-                        break
             with conn:
-                if not conn.execute(
-                    "SELECT 1 FROM messages WHERE id=? AND conversation_id=?",
+                msg=conn.execute(
+                    "SELECT text FROM messages WHERE id=? AND role='user' AND conversation_id=?",
                     (message_id,conversation_id)
+                ).fetchone()
+                if not msg:
+                    return
+                text=msg["text"].strip()
+                if not text or len(text)>600 or SECRET.search(text) or AUTO_PRIVATE.search(text):
+                    return
+                explicit=EXPLICIT.match(text)
+                implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
+                direct=AUTO_DIRECT.match(text)
+                if not (explicit or implicit or direct):
+                    return
+                # Пересказ, цитата, вопрос или предположение — не прямой факт пользователя.
+                if "?" in text or text.lstrip().startswith(("«",'"',">")):
+                    return
+                content=(explicit.group(1) if explicit else text).strip().rstrip(".")
+                if not 4<=len(content)<=400 or SECRET.search(content) or AUTO_PRIVATE.search(content):
+                    return
+                fingerprint=digest(content)
+                if conn.execute(
+                    "SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)
                 ).fetchone():
-                    return  # история уже очищена, задача больше неактуальна
+                    return
+                if conn.execute(
+                    "SELECT 1 FROM memory_excluded_sources WHERE source_message_id=?",(message_id,)
+                ).fetchone():
+                    return
+                if conn.execute(
+                    "SELECT 1 FROM memory_items WHERE source_message_id=? OR "
+                    "(fingerprint=? AND status='confirmed')",
+                    (message_id,fingerprint)
+                ).fetchone():
+                    return
+                # Определяем противоречие только в узкой проверяемой форме предпочтения.
+                topic=preference_topic(content)
+                conflict_id=None
+                if topic:
+                    previous=conn.execute(
+                        "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                        "AND (conversation_id='global' OR conversation_id=?)",
+                        (conversation_id,)
+                    ).fetchall()
+                    for item in previous:
+                        old=preference_topic(item["content"])
+                        if old and old[0]==topic[0] and old[1]!=topic[1]:
+                            conflict_id=item["id"]
+                            break
+                if not autonomous:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_candidates "
+                        "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
+                        "VALUES(?,?,?,?,?,'pending',?,?,?)",
+                        (str(uuid.uuid4()),content,fingerprint,message_id,
+                         conversation_id,now(),conflict_id,classify_brain(content))
+                    )
+                    return
+                item_id=str(uuid.uuid4())
+                ts=now()
+                # Под одной транзакцией — факт, источник, история, FTS5 и граф.
                 conn.execute(
-                    "INSERT OR IGNORE INTO memory_candidates "
-                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
-                    "VALUES(?,?,?,?,?,'pending',?,?,?)",
-                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with,
-                     classify_brain(content)))
+                    "INSERT INTO memory_items "
+                    "(id,content,fingerprint,kind,status,source_message_id,"
+                    "conversation_id,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'auto','confirmed',?,?,0,?,?,?)",
+                    (item_id,content,fingerprint,message_id,conversation_id,
+                     ts,ts,classify_brain(content))
+                )
+                conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",
+                             (item_id,content))
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                             (str(uuid.uuid4()),item_id,1,"auto_saved",content,ts))
+                self._link_local(conn,item_id,content)
+                if conflict_id:
+                    old=conn.execute(
+                        "SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
+                        (conflict_id,)
+                    ).fetchone()
+                    if old:
+                        opposite=preference_topic(old["content"])
+                        if opposite and topic and opposite[0]==topic[0] and opposite[1]!=topic[1]:
+                            conn.execute(
+                                "UPDATE memory_items SET status='superseded',cloud_allowed=0,"
+                                "superseded_by=?,updated_at=? WHERE id=?",
+                                (item_id,ts,conflict_id)
+                            )
+                            conn.execute("DELETE FROM memory_fts WHERE item_id=?",(conflict_id,))
+                            conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                         (conflict_id,conflict_id))
+                            conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(conflict_id,))
+                            conn.execute("DELETE FROM memory_summaries")
+                # Очередь прежних предложений для того же источника больше не нужна.
+                conn.execute(
+                    "UPDATE memory_candidates SET status='approved' WHERE source_message_id=? "
+                    "AND status='pending'",(message_id,)
+                )
+                changed=True
+        if changed:
+            self.grow_branches()
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -659,12 +778,15 @@ class MemoryEngine:
                     ).fetchone() for item in selected
                 ):
                     return  # забытый факт не возвращается через гонку фоновой сводки
+                # Выписка построена ТОЛЬКО из подтверждённых фактов с живыми источниками.
+                # При автономном режиме она одобряется локально, но не получает Cloud-доступ.
+                status="approved" if self.policy()["auto_growth"] else "draft"
                 conn.execute(
                     "INSERT INTO memory_summaries(conversation_id,content,source_message_id,status,updated_at) "
-                    "VALUES(?,?,?,'draft',?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(conversation_id) DO UPDATE SET "
                     "content=excluded.content,source_message_id=excluded.source_message_id,"
-                    "status='draft',cloud_allowed=0,updated_at=excluded.updated_at",
-                    (conversation_id,content,source_id,now()))
+                    "status=excluded.status,cloud_allowed=0,updated_at=excluded.updated_at",
+                    (conversation_id,content,source_id,status,now()))
 
     def summaries(self) -> list[dict]:
         with closing(db.connection(self.path)) as conn:
@@ -711,6 +833,8 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_jobs WHERE conversation_id=?",(conversation_id,))
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
 
     def recall(self, query: str, conversation_id: str, cloud_mode: bool) -> list[dict]:
         """Ранжированный лексический поиск, с безопасным русским префиксным стеммингом."""
@@ -746,6 +870,23 @@ class MemoryEngine:
             out.append(self._item(row))
             if len(out)>=5:
                 break
+        # Повторяющиеся темы сами помогают recall, в пределах трёх ветвей.
+        if len(out)<5:
+            seen={item["id"] for item in out}
+            matching=[
+                node for node in self.branch_tree()["branches"]
+                if node["depth"]>0 and node["term"] in words
+            ]
+            matching.sort(key=lambda node:(-node["depth"],-node["support"]))
+            for branch in matching[:3]:
+                for neighbor in self.branch_facts(branch["id"],conversation_id,cloud_mode):
+                    if neighbor["id"] not in seen:
+                        seen.add(neighbor["id"])
+                        out.append(neighbor)
+                    if len(out)>=5:
+                        break
+                if len(out)>=5:
+                    break
         # Один переход по проверенным локальным связям. Не обходим весь граф.
         if out and len(out)<5:
             seen={item["id"] for item in out}
@@ -846,6 +987,162 @@ class MemoryEngine:
 
     # Five-brain association graph: shared topics and true neural similarities.
     # All references resolve to confirmed records, never to AI guesses.
+    def maintain(self) -> bool:
+        """Периодически удалять устаревшие нейровекторы и развивать только живые ветви.
+
+        Пересборка выполняется не чаще раза в 30 минут при работающем приложении.
+        Никакого Cloud.ru, новых фактов или повторных платных запросов.
+        """
+        ts=now()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                last=conn.execute(
+                    "SELECT last_run FROM memory_growth_maintenance WHERE id=1"
+                ).fetchone()
+                if last and ts-last["last_run"]<30*60*1000:
+                    return False
+                conn.execute(
+                    "UPDATE memory_growth_maintenance SET last_run=? WHERE id=1",(ts,)
+                )
+                conn.execute(
+                    "DELETE FROM memory_vectors WHERE item_id IN "
+                    "(SELECT id FROM memory_items WHERE status!='confirmed' "
+                    "OR (expires_at IS NOT NULL AND expires_at<=?) OR cloud_allowed=0)",
+                    (ts,)
+                )
+                conn.execute(
+                    "DELETE FROM memory_links WHERE left_id NOT IN "
+                    "(SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?)) "
+                    "OR right_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?))",
+                    (ts,ts)
+                )
+                conn.execute(
+                    "DELETE FROM memory_summaries WHERE conversation_id NOT IN "
+                    "(SELECT id FROM conversations)"
+                )
+        self.grow_branches()
+        return True
+
+    def grow_branches(self) -> dict:
+        """Полностью локальное саморазвитие дерева памяти по повторяющимся темам.
+
+        Восемь исходных мозгов — стабильные корни. Темы без заранее заданного списка
+        образуют вложенные ветви из >=2 РАЗНЫХ подтверждённых воспоминаний.
+        Пересборка в одной SQLite-транзакции не оставляет удалённые сведения
+        в производных ветвях. Максимальная работа ограничена фиксированным окном.
+        """
+        stamp = now()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                # Берём write lock ДО чтения списка фактов. Иначе фоновый worker
+                # способен перезаписать дерево устаревшим снимком после нового факта.
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    "SELECT id,content,brain FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (stamp,BRANCH_SCAN_LIMIT)
+                ).fetchall()
+                # Ветка/запись привязана к существующему подтверждённому факту.
+                datasets = {brain: {} for brain in BRAINS}
+                titles = {}
+                for row in rows:
+                    if row["brain"] not in datasets or SECRET.search(row["content"]):
+                        continue
+                    terms = _keywords(row["content"])
+                    if not terms:
+                        continue
+                    datasets[row["brain"]][row["id"]] = terms
+                    for raw in TOKENS.findall(row["content"]):
+                        term = search_stem(raw.casefold())
+                        if term in terms and term not in titles:
+                            titles[term] = raw[:42]
+                conn.execute("DELETE FROM memory_branch_members")
+                conn.execute("DELETE FROM memory_branches WHERE depth>0")
+                for brain in BRAINS:
+                    conn.execute(
+                        "UPDATE memory_branches SET support=?,updated_at=? WHERE id=?",
+                        (len(datasets[brain]),stamp,brain)
+                    )
+                    if datasets[brain]:
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO memory_branch_members VALUES(?,?)",
+                            [(brain,memory_id) for memory_id in datasets[brain]]
+                        )
+                nodes_created = 0
+                # LIMIT ограничивает нагрузку при длительном использовании.
+                node_cap = 320
+
+                def expand(root: str, parent_id: str, doc_ids: set[str],
+                           used: frozenset[str], depth: int) -> None:
+                    nonlocal nodes_created
+                    if depth>MAX_BRANCH_DEPTH or nodes_created>=node_cap or len(doc_ids)<2:
+                        return
+                    counts: dict[str, set[str]] = {}
+                    for memory_id in doc_ids:
+                        for term in datasets[root][memory_id]:
+                            if term not in used and len(term)>=4:
+                                counts.setdefault(term,set()).add(memory_id)
+                    options = [
+                        (term,members) for term,members in counts.items()
+                        if len(members)>=2 and (depth==1 or len(members)<len(doc_ids))
+                    ]
+                    options.sort(key=lambda x:(-len(x[1]), x[0]))
+                    for term,members in options[:MAX_BRANCH_CHILDREN]:
+                        if nodes_created>=node_cap:
+                            break
+                        node_id = str(uuid.uuid5(
+                            uuid.NAMESPACE_URL, "meiyuren:memory-branch:"+parent_id+":"+term
+                        ))
+                        conn.execute(
+                            "INSERT INTO memory_branches "
+                            "(id,parent_id,root_brain,term,title,depth,support,updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            (node_id,parent_id,root,term,titles.get(term,term),depth,len(members),stamp)
+                        )
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO memory_branch_members VALUES(?,?)",
+                            [(node_id,memory_id) for memory_id in members]
+                        )
+                        nodes_created+=1
+                        expand(root,node_id,members,used | {term},depth+1)
+
+                for brain in BRAINS:
+                    expand(brain,brain,set(datasets[brain]),frozenset(),1)
+        return {"branches":nodes_created,"roots":len(BRAINS),"scanned":len(rows)}
+
+    def branch_tree(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT id,parent_id,root_brain,term,title,depth,support "
+                "FROM memory_branches ORDER BY root_brain,depth,title,id LIMIT 400"
+            ).fetchall()
+        return {"roots":list(BRAINS),"branches":[
+            dict(id=r["id"],parentId=r["parent_id"],brain=r["root_brain"],
+                 term=r["term"],title=r["title"],depth=r["depth"],support=r["support"])
+            for r in rows
+        ]}
+
+    def branch_facts(self,branch_id: str,conversation_id: str,cloud_mode: bool=False) -> list[dict]:
+        policy=self.policy()
+        if cloud_mode and not policy["allow_cloud_facts"]:
+            return []
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.* FROM memory_branch_members bm "
+                "JOIN memory_items m ON m.id=bm.memory_id "
+                "WHERE bm.branch_id=? AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "AND (m.conversation_id='global' OR m.conversation_id=?) "
+                "ORDER BY m.updated_at DESC LIMIT 100",
+                (branch_id,now(),conversation_id)
+            ).fetchall()
+        return [self._item(row) for row in rows
+                if not SECRET.search(row["content"])
+                and (not cloud_mode or bool(row["cloud_allowed"]))]
+
     def _link_local(self, conn: sqlite3.Connection, item_id: str, content: str) -> None:
         source=_keywords(content)
         if not source:
@@ -1084,5 +1381,7 @@ class MemoryEngine:
             candidates=conn.execute("SELECT COUNT(*) FROM memory_candidates WHERE status='pending'").fetchone()[0]
             queued=conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE state IN ('pending','running')").fetchone()[0]
             summaries=conn.execute("SELECT COUNT(*) FROM memory_summaries WHERE status='draft'").fetchone()[0]
+        with closing(db.connection(self.path)) as conn:
+            branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
-                    policy=self.policy(),network=self.brains())
+                    policy=self.policy(),network=self.brains(),autonomousBranches=branches)

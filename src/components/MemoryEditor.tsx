@@ -5,11 +5,12 @@ import {
   removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
   setMemoryPolicy, updateMemoryFact, previewMemoryRecall, getMemoryUsage,
   getMemoryBrainLinks, indexMemoryNeural, searchMemoryNeural, clearMemoryNeuralVectors,
-  rebuildMemoryBrainLinks,
+  rebuildMemoryBrainLinks, getMemoryTree,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
   MemoryStatus, MemorySummary, MemoryUsage, MemoryBrain, MemoryConnection, MemoryNeuralMatch,
+  MemoryTree, MemoryBranch,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
@@ -27,6 +28,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [summaries, setSummaries] = useState<MemorySummary[]>([]);
   const [policy, setPolicy] = useState<MemoryPolicy | null>(null);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
+  const [tree, setTree] = useState<MemoryTree | null>(null);
   const [factDraft, setFactDraft] = useState('');
   const [factCloud, setFactCloud] = useState(false);
   const [brainDraft, setBrainDraft] = useState<MemoryBrain | ''>('');
@@ -44,11 +46,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [n, f, c, s, p, state, logs] = await Promise.all([
+    const [n, f, c, s, p, state, logs, branches] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
-      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(),
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
     ]);
-    setNotes(n); setFacts(f); setCandidates(c); setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs);
+    setNotes(n); setFacts(f); setCandidates(c); setSummaries(s);
+    setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
   }
 
   useEffect(() => {
@@ -56,11 +59,11 @@ export function MemoryEditor({ active }: { active: boolean }) {
     let mounted = true;
     void Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
-      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(),
-    ]).then(([n, f, c, s, p, state, logs]) => {
+      getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
+    ]).then(([n, f, c, s, p, state, logs, branches]) => {
       if (mounted) {
         setNotes(n); setFacts(f); setCandidates(c);
-        setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs);
+        setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
       }
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
@@ -232,7 +235,9 @@ export function MemoryEditor({ active }: { active: boolean }) {
   return (
     <section className="memory-editor memory-core" aria-label="Управление памятью Meiyuren">
       <h3>Memory Core · умная память</h3>
-      <p>SQLite работает локально. Новые факты предлагает автоматический анализ без AI, но сохраняются они только после подтверждения.</p>
+      <p>Саморазвитие работает локально: память автоматически сохраняет ясные безопасные утверждения,
+        находит повторяющиеся темы и выращивает вложенные ветви восьми мозгов.
+        Редактирование и удаление остаются под контролем пользователя.</p>
       {status && <>
         <div className="memory-core__stats">
           <span>Фактов: {status.facts}</span>
@@ -240,6 +245,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
           <span>Очередь: {status.jobs}</span>
           <span>Связей: {status.network.links}</span>
           <span>Нейровекторов: {status.network.neuralVectors}</span>
+          <span>Автономных ветвей: {status.autonomousBranches}</span>
         </div>
         <h4>Восемь связанных мозгов долгосрочной памяти</h4>
         <div className="memory-core__brains">
@@ -249,6 +255,30 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>)}
         </div>
       </>}
+      {tree && <section className="memory-core__tree" aria-label="Дерево саморазвивающейся памяти">
+        <h4>Саморазвивающиеся направления памяти</h4>
+        <p>Восемь корней и автоматически созданные вложенные темы.
+          Новая ветвь появляется, когда её подтверждают как минимум два разных воспоминания.</p>
+        {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(brain => {
+          const roots = tree.branches.filter(node => node.brain === brain);
+          const root = roots.find(node => node.id === brain);
+          const nested: MemoryBranch[] = [];
+          const visit = (parent: string): void => {
+            roots.filter(node => node.parentId === parent)
+              .sort((a, b) => b.support - a.support || a.title.localeCompare(b.title))
+              .forEach(node => { nested.push(node); visit(node.id); });
+          };
+          visit(brain);
+          return <div key={brain} className="memory-core__tree-brain">
+            <strong>{BRAIN_NAMES[brain]}</strong>
+            <small> · {root?.support ?? 0} воспоминаний · {nested.length} ветвей</small>
+            {nested.map(node => <div key={node.id} className="memory-core__tree-node"
+              style={{ paddingLeft: Math.min(node.depth, 4) * 14 }}>
+              <span>↳ {node.title}</span><small>{node.support}</small>
+            </div>)}
+          </div>;
+        })}
+      </section>}
       <button type="button" disabled={busy} onClick={() => void action(async () => {
         const links = await rebuildMemoryBrainLinks();
         return 'Локальных связей перестроено: ' + links + '. Cloud.ru не использовался.';
@@ -263,7 +293,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
       {policy && ([
         ['allow_cloud_notes', 'Разрешить передачу заметки Cloud.ru'],
         ['allow_cloud_facts', 'Разрешить передачу одобренных фактов Cloud.ru'],
-        ['auto_extract', 'Автоматически искать кандидатов (локально)'],
+        ['auto_extract', 'Автоматически анализировать новые реплики (локально)'],
+        ['auto_growth', 'Самостоятельно запоминать безопасные факты и выращивать ветви'],
         ['auto_summaries', 'Автоматически создавать выписки (локально)'],
         ['allow_cloud_embeddings', 'Разрешить ручную нейроиндексацию через Cloud.ru (может быть платной)'],
       ] as const).map(([key, caption]) =>
@@ -303,6 +334,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       </label>
       <button type="button" disabled={busy || !factDraft.trim()} onClick={() => void addFact()}>＋ Запомнить факт</button>
 
+      {!policy?.auto_growth && <>
       <h4>Предложения на сохранение ({candidates.length})</h4>
       {candidates.length === 0 && <p>Пока предложений нет.</p>}
       <ul className="memory-core__list">
@@ -317,6 +349,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         </li>)}
       </ul>
 
+      </>}
       <h4>Сохранённые воспоминания ({facts.length})</h4>
       {facts.length === 0 && <p>Память пока пуста.</p>}
       <ul className="memory-core__list">

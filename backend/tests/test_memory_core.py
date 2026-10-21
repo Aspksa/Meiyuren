@@ -18,6 +18,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud.keyring, "delete_password", lambda *_: vault.pop("secret", None))
     with TestClient(create_app(tmp_path / "memory.sqlite3"),
                     headers={"X-Meiyuren-Client": "1"}) as app:
+        # Совместимость старого режима с предложениями и ручным подтверждением.
+        assert app.put("/api/memory/policy", json={"auto_growth": False}).status_code == 200
         yield app
 
 

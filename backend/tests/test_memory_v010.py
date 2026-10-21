@@ -15,6 +15,8 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud.keyring, "get_password", lambda *_: None)
     path = tmp_path / "eight-brains.sqlite3"
     with TestClient(create_app(path), headers={"X-Meiyuren-Client": "1"}) as client:
+        # Сценарии v0.10 проверяют ручное подтверждение, теперь это отдельный режим.
+        assert client.put("/api/memory/policy", json={"auto_growth": False}).status_code == 200
         yield client, path
 
 
