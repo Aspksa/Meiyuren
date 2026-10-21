@@ -7,11 +7,12 @@ import {
   getMemoryBrainLinks, indexMemoryNeural, searchMemoryNeural, clearMemoryNeuralVectors,
   rebuildMemoryBrainLinks, getMemoryTree, getDeepMemoryOverview, getDeepMemoryMetrics,
   rebuildDeepMemoryIndex, sendDeepMemoryFeedback,
+  getEpisodicMemoryOverview, rebuildEpisodicMemory,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
   MemoryStatus, MemorySummary, MemoryUsage, MemoryBrain, MemoryConnection, MemoryNeuralMatch,
-  MemoryTree, MemoryBranch, DeepMemoryOverview, DeepMemoryMetrics,
+  MemoryTree, MemoryBranch, DeepMemoryOverview, DeepMemoryMetrics, EpisodicMemoryOverview,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
@@ -31,6 +32,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [tree, setTree] = useState<MemoryTree | null>(null);
   const [deep, setDeep] = useState<DeepMemoryOverview | null>(null);
+  const [episodes, setEpisodes] = useState<EpisodicMemoryOverview | null>(null);
   const [deepMetrics, setDeepMetrics] = useState<DeepMemoryMetrics | null>(null);
   const [deepExpanded, setDeepExpanded] = useState(false);
   const [factDraft, setFactDraft] = useState('');
@@ -50,12 +52,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [n, f, c, s, p, state, logs, branches, detailed, quality] = await Promise.all([
+    const [n, f, c, s, p, state, logs, branches, detailed, quality, episodic] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
-      getDeepMemoryOverview(), getDeepMemoryMetrics(),
+      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(),
     ]);
-    setDeep(detailed); setDeepMetrics(quality);
+    setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
     setNotes(n); setFacts(f); setCandidates(c); setSummaries(s);
     setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
   }
@@ -66,12 +68,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
     void Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
-      getDeepMemoryOverview(), getDeepMemoryMetrics(),
-    ]).then(([n, f, c, s, p, state, logs, branches, detailed, quality]) => {
+      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(),
+    ]).then(([n, f, c, s, p, state, logs, branches, detailed, quality, episodic]) => {
       if (mounted) {
         setNotes(n); setFacts(f); setCandidates(c);
         setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
-        setDeep(detailed); setDeepMetrics(quality);
+        setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
       }
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
@@ -263,6 +265,47 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>)}
         </div>
       </>}
+      {episodes && <section className="memory-core__explanation" aria-label="Эпизодическая память">
+        <h4>Эпизодическая память v0.13</h4>
+        <p>Эпизоды сгруппированы по датам записи в UTC. Если в факте есть явная дата события,
+          она показывается отдельно, без подмены времени разговора.</p>
+        <div className="memory-core__stats">
+          <span>Эпизоды: {episodes.count}</span>
+          <span>Контрольные точки: {episodes.checkpoints.length}</span>
+          <span>Продолжить: {episodes.continuation.length}</span>
+        </div>
+        <h4>Контрольные точки проектов</h4>
+        <ul className="memory-core__list">
+          {episodes.continuation.slice(0, 8).map(item => <li key={item.memoryId}>
+            {item.content}
+            <small>Состояние: {item.state} · {new Date(item.observedAt).toLocaleString('ru-RU')}</small>
+          </li>)}
+        </ul>
+        <h4>Эпизоды разговоров</h4>
+        {episodes.episodes.length === 0 && <p>Пока недостаточно подтверждённых сведений с источниками.</p>}
+        {episodes.episodes.slice(0, 12).map(episode => <details key={episode.id}>
+          <summary>{episode.day} · {episode.facts.length} воспоминаний</summary>
+          <p>{episode.short.join(' · ')}</p>
+          <ul className="memory-core__list">
+            {episode.facts.map(item => <li key={item.id}>
+              <strong>{BRAIN_NAMES[item.brain]}</strong> · {item.content}
+            </li>)}
+          </ul>
+        </details>)}
+        {episodes.explicitEventDates.length > 0 && <details>
+          <summary>Даты событий, явно указанные пользователем</summary>
+          <ul className="memory-core__list">
+            {episodes.explicitEventDates.map(item => <li key={item.memoryId}>
+              {item.eventDay} · ID воспоминания: {item.memoryId.slice(0, 8)}
+            </li>)}
+          </ul>
+        </details>}
+        <button type="button" disabled={busy} onClick={() => void action(async () => {
+          const result = await rebuildEpisodicMemory();
+          return 'Локально перестроено эпизодов: ' + result.episodes;
+        })}>Перестроить эпизоды</button>
+      </section>}
+
       {deep && <section className="memory-core__explanation" aria-label="Глубокая память восьми мозгов">
         <h4>Глубокая память v0.12</h4>
         <p>Хронология, незавершённые проекты, причины решений и многоуровневый обзор.
