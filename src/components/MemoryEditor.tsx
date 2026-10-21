@@ -5,12 +5,13 @@ import {
   removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
   setMemoryPolicy, updateMemoryFact, previewMemoryRecall, getMemoryUsage,
   getMemoryBrainLinks, indexMemoryNeural, searchMemoryNeural, clearMemoryNeuralVectors,
-  rebuildMemoryBrainLinks, getMemoryTree,
+  rebuildMemoryBrainLinks, getMemoryTree, getDeepMemoryOverview, getDeepMemoryMetrics,
+  rebuildDeepMemoryIndex, sendDeepMemoryFeedback,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
   MemoryStatus, MemorySummary, MemoryUsage, MemoryBrain, MemoryConnection, MemoryNeuralMatch,
-  MemoryTree, MemoryBranch,
+  MemoryTree, MemoryBranch, DeepMemoryOverview, DeepMemoryMetrics,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
@@ -29,6 +30,9 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [policy, setPolicy] = useState<MemoryPolicy | null>(null);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [tree, setTree] = useState<MemoryTree | null>(null);
+  const [deep, setDeep] = useState<DeepMemoryOverview | null>(null);
+  const [deepMetrics, setDeepMetrics] = useState<DeepMemoryMetrics | null>(null);
+  const [deepExpanded, setDeepExpanded] = useState(false);
   const [factDraft, setFactDraft] = useState('');
   const [factCloud, setFactCloud] = useState(false);
   const [brainDraft, setBrainDraft] = useState<MemoryBrain | ''>('');
@@ -46,10 +50,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [n, f, c, s, p, state, logs, branches] = await Promise.all([
+    const [n, f, c, s, p, state, logs, branches, detailed, quality] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
+      getDeepMemoryOverview(), getDeepMemoryMetrics(),
     ]);
+    setDeep(detailed); setDeepMetrics(quality);
     setNotes(n); setFacts(f); setCandidates(c); setSummaries(s);
     setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
   }
@@ -60,10 +66,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
     void Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
-    ]).then(([n, f, c, s, p, state, logs, branches]) => {
+      getDeepMemoryOverview(), getDeepMemoryMetrics(),
+    ]).then(([n, f, c, s, p, state, logs, branches, detailed, quality]) => {
       if (mounted) {
         setNotes(n); setFacts(f); setCandidates(c);
         setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
+        setDeep(detailed); setDeepMetrics(quality);
       }
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
@@ -255,6 +263,73 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>)}
         </div>
       </>}
+      {deep && <section className="memory-core__explanation" aria-label="Глубокая память восьми мозгов">
+        <h4>Глубокая память v0.12</h4>
+        <p>Хронология, незавершённые проекты, причины решений и многоуровневый обзор.
+          Все сведения берутся из действующих воспоминаний, без догадок нейросети.</p>
+        <div className="memory-core__stats">
+          <span>События: {deep.timeline.length}</span>
+          <span>Продолжить: {deep.continuation.length}</span>
+          <span>Индексировано: {deepMetrics?.indexedEvents ?? 0}</span>
+        </div>
+        <button type="button" disabled={busy} onClick={() => setDeepExpanded(value => !value)}>
+          {deepExpanded ? 'Свернуть подробности' : 'Показать подробности'}
+        </button>
+        <h4>Незавершённые направления</h4>
+        {deep.continuation.length === 0 && <p>Пока нет подтверждённых незавершённых направлений.</p>}
+        <ul className="memory-core__list">
+          {deep.continuation.slice(0, 8).map(item => <li key={item.id}>
+            <strong>{BRAIN_NAMES[item.brain]}</strong> · {item.content}
+            <small>Состояние: {item.eventState} · {new Date(item.observedAt).toLocaleDateString('ru-RU')}</small>
+            <div className="memory-core__actions">
+              <button type="button" disabled={busy} onClick={() => void action(async () => {
+                await sendDeepMemoryFeedback(item.id, true);
+                return 'Полезность воспоминания отмечена.';
+              })}>Полезно</button>
+              <button type="button" disabled={busy} onClick={() => void action(async () => {
+                await sendDeepMemoryFeedback(item.id, false);
+                return 'Нерелевантность воспоминания отмечена.';
+              })}>Не по теме</button>
+            </div>
+          </li>)}
+        </ul>
+        {deepExpanded && <>
+          <h4>Хронология</h4>
+          <ul className="memory-core__list">
+            {deep.timeline.slice(0, 15).map(item => <li key={item.id}>
+              {new Date(item.observedAt).toLocaleString('ru-RU')} ·
+              {BRAIN_NAMES[item.brain]} · {item.content}
+            </li>)}
+          </ul>
+          <h4>Решения и прямо указанные причины</h4>
+          <ul className="memory-core__list">
+            {deep.decisions.map(item => <li key={item.id}>
+              {item.content}
+              {item.statedReason && <small>Причина со слов пользователя: {item.statedReason}</small>}
+            </li>)}
+          </ul>
+          <h4>Краткая и детальная память</h4>
+          {deep.brains.map(brain => <div key={brain.brain}>
+            <strong>{BRAIN_NAMES[brain.brain]} · {brain.count}</strong>
+            <p>{brain.short.length ? brain.short.join(' · ') : 'Нет сохранённых сведений'}</p>
+            <details>
+              <summary>Подробности</summary>
+              <ul className="memory-core__list">
+                {brain.detailed.map(item => <li key={item.id}>{item.content}</li>)}
+              </ul>
+            </details>
+          </div>)}
+          <h4>Статистика качества поиска</h4>
+          <p>{deepMetrics?.search.map(item =>
+            item.intent + ': ' + item.hits + ' совпадений из ' + item.searches
+          ).join(' · ') || 'Пока нет истории запросов'}</p>
+        </>}
+        <button type="button" disabled={busy} onClick={() => void action(async () => {
+          const result = await rebuildDeepMemoryIndex();
+          return 'Перестроено записей: ' + result.indexed + '. Облачных запросов нет.';
+        })}>Переиндексировать глубокую память</button>
+      </section>}
+
       {tree && <section className="memory-core__tree" aria-label="Дерево саморазвивающейся памяти">
         <h4>Саморазвивающиеся направления памяти</h4>
         <p>Восемь корней и автоматически созданные вложенные темы.
