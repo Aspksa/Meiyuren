@@ -18,7 +18,7 @@ def test_eight_brains_report_grounded_empty():
     assert "восьми независимых LLM" in report
 
 def test_normal_chat_diagnostic_uses_backend(tmp_path):
-    with TestClient(create_app(tmp_path/"brain_diagnostics.sqlite3")) as client:
+    with TestClient(create_app(tmp_path/"brain_diagnostics.sqlite3"), headers={"X-Meiyuren-Client":"1"}) as client:
         result=client.post("/api/chat/messages",json={
             "text":"Проведи самодиагностику всех 8 мозгов"} )
         assert result.status_code==201, result.text
@@ -28,7 +28,7 @@ def test_normal_chat_diagnostic_uses_backend(tmp_path):
         assert "системные метрики" in answer.lower()
 
 def test_stream_chat_diagnostic_uses_backend(tmp_path):
-    with TestClient(create_app(tmp_path/"brain_stream.sqlite3")) as client:
+    with TestClient(create_app(tmp_path/"brain_stream.sqlite3"), headers={"X-Meiyuren-Client":"1"}) as client:
         response=client.post("/api/chat/stream",json={
             "text":"Проверка восьми мозгов: статус памяти"})
         assert response.status_code==200
