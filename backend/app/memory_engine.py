@@ -1966,6 +1966,50 @@ class MemoryEngine:
                     "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
                 ).fetchone()[0]
 
+    def universe_health(self) -> dict:
+        """Read-only graph integrity checks and evolution counters; no private texts."""
+        with closing(db.connection(self.path)) as conn:
+            orphan_links=conn.execute(
+                "SELECT COUNT(*) FROM memory_links l "
+                "LEFT JOIN memory_items a ON a.id=l.left_id "
+                "LEFT JOIN memory_items b ON b.id=l.right_id "
+                "WHERE a.id IS NULL OR b.id IS NULL OR a.status!='confirmed' "
+                "OR b.status!='confirmed'").fetchone()[0]
+            orphan_vectors=conn.execute(
+                "SELECT COUNT(*) FROM memory_vectors v "
+                "LEFT JOIN memory_items m ON m.id=v.item_id "
+                "WHERE m.id IS NULL OR m.status!='confirmed'").fetchone()[0]
+            by_brain=conn.execute(
+                "SELECT brain,COUNT(*) AS total FROM memory_items "
+                "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?) "
+                "GROUP BY brain",(now(),)).fetchall()
+        return {"orphanLinks":orphan_links,"orphanVectors":orphan_vectors,
+                "brains":{name:next((r["total"] for r in by_brain if r["brain"]==name),0)
+                          for name in BRAINS},
+                "healthy":orphan_links==0 and orphan_vectors==0,
+                "checkedAt":now(),"readOnly":True}
+
+    def universe_snapshot(self) -> dict:
+        """Durable aggregate snapshots, never retain forgotten fact IDs or texts."""
+        counts=self.universe_health()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS universe_snapshots "
+                             "(timestamp INTEGER PRIMARY KEY, counts TEXT NOT NULL, "
+                             "orphan_links INTEGER NOT NULL, orphan_vectors INTEGER NOT NULL)")
+                ts=now()
+                conn.execute(
+                    "INSERT OR REPLACE INTO universe_snapshots VALUES(?,?,?,?)",
+                    (ts,json.dumps(counts["brains"],sort_keys=True),
+                     counts["orphanLinks"],counts["orphanVectors"]))
+                rows=conn.execute("SELECT timestamp,counts,orphan_links,orphan_vectors "
+                                  "FROM universe_snapshots ORDER BY timestamp DESC LIMIT 120").fetchall()
+        return {"snapshots":[{"timestamp":r["timestamp"],
+                              "brains":json.loads(r["counts"]),
+                              "orphanLinks":r["orphan_links"],
+                              "orphanVectors":r["orphan_vectors"]} for r in rows],
+                "aggregateOnly":True}
+
     def neural_universe_graph(self, limit: int=180) -> dict:
         """Bounded source-backed graph and event history; no memory content exposed."""
         cap=max(1,min(limit,300))
