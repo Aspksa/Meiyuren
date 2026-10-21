@@ -280,12 +280,18 @@ def entities(text: str) -> list[tuple[str, str, str, str | None]]:
         add("project", name)
     for match in _CAPITAL.finditer(text):
         word = match.group("word")
-        if word in projects or word in _NOT_TOOL or match.start("word") == 0 and not word.isascii():
+        if word in projects or word in _NOT_TOOL:
             continue
         if word.isascii():
-            add("tool", word)
+            # «Мой брат John» — уже человек; «в Google» — организация, а не инструмент.
+            if any(v[2] == word or v[1] == word.casefold() for v in found.values()):
+                continue
+            add("org" if (match.group("prep") or "").strip() in ("в", "во", "из") else "tool", word)
             continue
         tags = _tags(word)
+        # С заглавной буквы начинается любое предложение: первое слово берём, только если это имя.
+        if match.start("word") == 0 and "Name" not in tags:
+            continue
         if match.group("prep") and "Geox" in tags:
             add("place", (lemma(word.casefold()) or word).capitalize())
         elif "Orgn" in tags:

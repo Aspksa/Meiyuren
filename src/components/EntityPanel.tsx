@@ -16,7 +16,7 @@ const SEMANTIC_STATES: Record<string, string> = {
 };
 
 /** «Люди и проекты»: что память знает о каждом названном человеке, проекте, месте. */
-export function EntityPanel({ active }: { active: boolean }) {
+export function EntityPanel({ active, version }: { active: boolean; version: number }) {
   const [entities, setEntities] = useState<MemoryEntity[]>([]);
   const [open, setOpen] = useState<MemoryEntityDetail | null>(null);
   const [meaning, setMeaning] = useState<SemanticStatus | null>(null);
@@ -25,7 +25,12 @@ export function EntityPanel({ active }: { active: boolean }) {
     if (!active) return;
     void getMemoryEntities().then(setEntities).catch(() => undefined);
     void getSemanticStatus().then(setMeaning).catch(() => undefined);
-  }, [active]);
+    // Факт добавлен, изменён или забыт: открытая карточка тоже обновляется.
+    setOpen(current => {
+      if (current) void getMemoryEntity(current.id).then(setOpen).catch(() => setOpen(null));
+      return current;
+    });
+  }, [active, version]);
 
   const kinds = (Object.keys(KIND_LABELS) as MemoryEntity['kind'][]).filter(kind => entities.some(e => e.kind === kind));
   return <section className="entity-panel" aria-label="Люди и проекты">

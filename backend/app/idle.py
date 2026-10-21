@@ -269,7 +269,10 @@ class IdleRuntime:
         if not model.ready:
             model.start_loading(allow_download=True)
             return model.status()
-        return {"state": "ready", **self.engine.semantic_index(model)}
+        try:
+            return {"state": "ready", **self.engine.semantic_index(model)}
+        except Exception as exc:  # сторонняя ONNX-модель не должна сорвать бэкап и проверку базы
+            return {"state": "failed", "error": type(exc).__name__}
 
     # -- 6. health ---------------------------------------------------------
     def health(self) -> dict:

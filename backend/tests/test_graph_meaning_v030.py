@@ -36,6 +36,11 @@ def test_entities_are_extracted_only_when_named():
     assert ("place", "Казань") in {(k, n) for k, _, n, _ in entities("Моя мама живёт в Казани")}
     assert ("person", "Лена") in {(k, n) for k, _, n, _ in entities("Вчера встретил Лену")}
     assert entities("Хочу выучить японский к декабрю") == []
+    # Имя в начале предложения и латинское имя человека — не инструменты.
+    found = {(k, n) for k, _, n, _ in entities("Петя работает в Яндексе")}
+    assert found == {("person", "Петя"), ("org", "Яндекс")}
+    assert [(k, n) for k, _, n, _ in entities("Мой брат John учится")] == [("person", "John")]
+    assert entities("Сегодня хороший день") == []
 
 
 def test_person_node_collects_all_facts(app):

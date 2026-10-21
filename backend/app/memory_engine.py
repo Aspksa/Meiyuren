@@ -2947,7 +2947,8 @@ class MemoryEngine:
                 "SELECT e.*,COUNT(x.memory_id) AS facts FROM memory_entities e "
                 "JOIN memory_entity_mentions x ON x.entity_id=e.id "
                 "JOIN memory_items m ON m.id=x.memory_id AND m.status='confirmed' "
-                "GROUP BY e.id ORDER BY facts DESC,e.updated_at DESC LIMIT 200").fetchall()
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "GROUP BY e.id ORDER BY facts DESC,e.updated_at DESC LIMIT 200",(now(),)).fetchall()
         return [dict(id=r["id"],kind=r["kind"],name=r["name"],role=r["role"],facts=r["facts"]) for r in rows]
 
     def entity_detail(self,entity_id: str) -> dict | None:
@@ -2957,13 +2958,16 @@ class MemoryEngine:
                 return None
             rows=conn.execute(
                 "SELECT m.* FROM memory_items m JOIN memory_entity_mentions x ON x.memory_id=m.id "
-                "WHERE x.entity_id=? AND m.status='confirmed' ORDER BY m.updated_at DESC",
-                (entity_id,)).fetchall()
+                "WHERE x.entity_id=? AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) ORDER BY m.updated_at DESC",
+                (entity_id,now())).fetchall()
             related=conn.execute(
                 "SELECT e.id,e.kind,e.name,COUNT(*) AS shared FROM memory_entity_mentions a "
                 "JOIN memory_entity_mentions b ON b.memory_id=a.memory_id AND b.entity_id!=a.entity_id "
-                "JOIN memory_entities e ON e.id=b.entity_id WHERE a.entity_id=? "
-                "GROUP BY e.id ORDER BY shared DESC LIMIT 12",(entity_id,)).fetchall()
+                "JOIN memory_entities e ON e.id=b.entity_id "
+                "JOIN memory_items m ON m.id=a.memory_id AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) WHERE a.entity_id=? "
+                "GROUP BY e.id ORDER BY shared DESC LIMIT 12",(now(),entity_id)).fetchall()
         return dict(id=entity["id"],kind=entity["kind"],name=entity["name"],role=entity["role"],
                     facts=[self._item(r) for r in rows],
                     related=[dict(id=r["id"],kind=r["kind"],name=r["name"],shared=r["shared"])
@@ -3021,14 +3025,16 @@ class MemoryEngine:
 
     def _semantic_scores(self,query: str) -> dict[str,float]:
         model=semantic.model_for(self.path)
-        if not model.ready:
+        if not model.ready or not self.policy()["semantic_model"]:
             return {}
         try:
             probe=model.encode([query])[0]
         except Exception:
             return {}
         with closing(db.connection(self.path)) as conn:
-            rows=conn.execute("SELECT item_id,vector FROM memory_semantic_vectors").fetchall()
+            # Только векторы текущей версии факта: после правки старый вектор не подходит.
+            rows=conn.execute("SELECT v.item_id,v.vector FROM memory_semantic_vectors v "
+                              "JOIN memory_items m ON m.id=v.item_id AND m.fingerprint=v.digest").fetchall()
         return {r[0]:semantic.similarity(probe,semantic.unpack(r[1])) for r in rows}
 
     def status(self) -> dict:

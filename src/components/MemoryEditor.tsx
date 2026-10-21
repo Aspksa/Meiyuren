@@ -29,6 +29,7 @@ const BRAIN_NAMES: Record<MemoryBrain, string> = {
 export function MemoryEditor({ active }: { active: boolean }) {
   const clearChat = useAppStore(s => s.clearChat);
   const [notes, setNotes] = useState('');
+  const [entityVersion, setEntityVersion] = useState(0);
   const [facts, setFacts] = useState<MemoryFact[]>([]);
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [summaries, setSummaries] = useState<MemorySummary[]>([]);
@@ -58,6 +59,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [message, setMessage] = useState('');
 
   async function refresh() {
+    setEntityVersion(v => v + 1);
     const [n, f, c, s, p, state, logs, branches, detailed, quality, episodic, cortex] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
@@ -464,7 +466,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         return 'Локально обработано задач: ' + result.processed;
       })}>Обработать очередь памяти</button>
 
-      <EntityPanel active={active} />
+      <EntityPanel active={active} version={entityVersion} />
 
       <h4>Разрешения</h4>
       <p>По умолчанию память и заметки не передаются Cloud.ru. История текущего диалога передаётся провайдеру, когда включён облачный чат.</p>

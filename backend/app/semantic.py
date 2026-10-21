@@ -52,7 +52,9 @@ class SemanticModel:
             self.state = "loading" if self.downloaded() else "downloading"
             try:
                 self.folder.mkdir(parents=True, exist_ok=True)
-                self._model = TextEmbedding(MODEL, cache_dir=str(self.folder))
+                # Без разрешения на скачивание библиотека не идёт в сеть даже при неполном кэше.
+                self._model = TextEmbedding(MODEL, cache_dir=str(self.folder),
+                                            local_files_only=not allow_download)
                 self.state, self.error = "ready", None
             except Exception as exc:  # сеть, диск, повреждённый файл — пробуем в другой раз
                 logging.getLogger(__name__).warning("Модель смысла не загрузилась: %s", exc)
