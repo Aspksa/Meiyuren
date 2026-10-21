@@ -97,7 +97,9 @@ class IdleRuntime:
                 return conn.execute("UPDATE idle_runs SET seen=1 WHERE seen=0").rowcount
 
     def tick(self, *, force: bool = False) -> dict:
-        if not self._lock.acquire(blocking=False):
+        # Ручной запуск ждёт короткую фоновую проверку, а не отвечает «занято».
+        locked = self._lock.acquire(timeout=30) if force else self._lock.acquire(blocking=False)
+        if not locked:
             return {"ran": False, "reason": "busy"}
         try:
             stamp = now()
