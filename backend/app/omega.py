@@ -54,7 +54,7 @@ class CognitiveImmuneSystem:
     """Reject unsupported/duplicate evidence and flag candidate contradictions."""
     @staticmethod
     def inspect(evidence: Iterable[Evidence]) -> dict:
-        seen_sources:dict[str,str]={}
+        seen_sources:dict[str,set[str]]=defaultdict(set)
         accepted=[]
         rejected=[]
         for item in evidence:
@@ -64,10 +64,10 @@ class CognitiveImmuneSystem:
             fingerprint=sha256(
                 f"{item.brain}|{item.scope}|{item.text.casefold().strip()}".encode()
             ).hexdigest()
-            if fingerprint in seen_sources and seen_sources[fingerprint]==item.source:
+            if item.source in seen_sources[fingerprint]:
                 rejected.append({"id":item.id,"reason":"duplicate_same_source"})
                 continue
-            seen_sources[fingerprint]=item.source
+            seen_sources[fingerprint].add(item.source)
             accepted.append(item)
         return {"accepted":accepted,"rejected":rejected}
 
