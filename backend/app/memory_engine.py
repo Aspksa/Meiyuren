@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from contextlib import closing
 import hashlib
+import json
+import math
+import httpx
 from pathlib import Path
 import re
 import sqlite3
@@ -16,6 +19,39 @@ import uuid
 from . import db
 
 MAX_CONTEXT = 1700
+BRAINS = ("identity", "episodes", "goals", "habits", "knowledge")
+EMBED_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+EMBED_DIMS = 1024
+
+
+def classify_brain(content: str) -> str:
+    """Правила маршрутизации: AI не выдумывает категорию и факты."""
+    text = content.casefold()
+    if re.search(r"\b(?:цель|планирую|собираюсь|хочу|намерен|достичь)\b", text):
+        return "goals"
+    if re.search(r"\b(?:вчера|сегодня|позавчера|неделю назад|событие|путешествовал|побывал)\b", text):
+        return "episodes"
+    if re.search(r"\b(?:каждый день|каждое утро|обычно|привык|привычка|регулярно)\b", text):
+        return "habits"
+    if re.search(r"\b(?:изучаю|научился|умею|освоил|обучаюсь|учу)\b", text):
+        return "knowledge"
+    return "identity"
+
+
+def _keywords(content: str) -> set[str]:
+    return {search_stem(word.casefold()) for word in TOKENS.findall(content)
+            if len(word)>3 and word.casefold() not in STOPWORDS}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if len(a)!=len(b) or not a:
+        return 0.0
+    a_norm=math.sqrt(sum(x*x for x in a))
+    b_norm=math.sqrt(sum(x*x for x in b))
+    if not a_norm or not b_norm:
+        return 0.0
+    return sum(x*y for x,y in zip(a,b))/(a_norm*b_norm)
+
 TOKENS = re.compile(r"[^\W_]+", re.UNICODE)
 SECRET = re.compile(
     r"(?i)(?:api[\s_-]*key|secret|token|парол[ьи]|ключ[\s_-]*api|"
@@ -41,7 +77,7 @@ def preference_topic(content: str) -> tuple[str, bool] | None:
     return (topic, bool(positive))
 
 
-STOPWORDS = frozenset(("мне","что","это","как","или","для","мой","моя","мои","когда",
+STOPWORDS = frozenset(("люблю","предпочитаю","нравится","нравятся","больше","мне","что","это","как","или","для","мой","моя","мои","когда",
                       "где","наш","ваш","могу","можно","есть","еще","ещё","хочу",
                       "тебе","меня","будет","было","были","кто","про"))
 
@@ -99,6 +135,9 @@ class MemoryEngine:
             with conn:
                 old_revision_schema = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_revisions'"
+                ).fetchone() is not None
+                existing_graph = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_links'"
                 ).fetchone() is not None
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_items (
                     id TEXT PRIMARY KEY, content TEXT NOT NULL, fingerprint TEXT NOT NULL,
@@ -166,6 +205,37 @@ class MemoryEngine:
                 item_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_items)")}
                 if "superseded_by" not in item_columns:
                     conn.execute("ALTER TABLE memory_items ADD COLUMN superseded_by TEXT")
+                if "brain" not in item_columns:
+                    conn.execute("ALTER TABLE memory_items ADD COLUMN brain TEXT NOT NULL DEFAULT 'identity'")
+                candidate_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_candidates)")}
+                if "brain" not in candidate_columns:
+                    conn.execute("ALTER TABLE memory_candidates ADD COLUMN brain TEXT NOT NULL DEFAULT 'identity'")
+                policy_columns={r["name"] for r in conn.execute("PRAGMA table_info(memory_policy)")}
+                if "allow_cloud_embeddings" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_links (
+                    left_id TEXT NOT NULL, right_id TEXT NOT NULL,
+                    relation TEXT NOT NULL CHECK (relation IN ('shared_topic','neural_similarity')),
+                    weight REAL NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(left_id,right_id,relation)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_right ON memory_links(right_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_vectors (
+                    item_id TEXT PRIMARY KEY, model TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, vector_json TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL, created_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_embedding_requests (
+                    request_id TEXT PRIMARY KEY, item_id TEXT NOT NULL,
+                    content_digest TEXT NOT NULL, model TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('pending','done','unknown')),
+                    created_at INTEGER NOT NULL
+                )""")
+                # Категории для ранее сохранённых фактов, только при первом добавлении поля.
+                if "brain" not in item_columns:
+                    for legacy_item in conn.execute("SELECT id,content FROM memory_items"):
+                        conn.execute("UPDATE memory_items SET brain=? WHERE id=?",
+                                     (classify_brain(legacy_item["content"]),legacy_item["id"]))
 
                 # FTS5 — только локальный индекс. Данные удаляются вместе с фактом.
                 conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(item_id UNINDEXED, content, tokenize='unicode61')")
@@ -181,20 +251,32 @@ class MemoryEngine:
                         "VALUES(?,?,?,'legacy','confirmed',?,?)",
                         (row["id"],row["content"],digest(row["content"]),row["created_at"],row["created_at"]),
                     )
+                # Идемпотентный пересчёт локальных областей и графа для legacy-данных.
+                if "brain" not in item_columns:
+                    for row in conn.execute("SELECT id,content FROM memory_items"):
+                        conn.execute("UPDATE memory_items SET brain=? WHERE id=?",
+                                     (classify_brain(row["content"]),row["id"]))
                 conn.execute(
                     "INSERT INTO memory_fts(item_id,content) "
                     "SELECT m.id,m.content FROM memory_items m "
                     "WHERE m.status='confirmed' AND NOT EXISTS "
                     "(SELECT 1 FROM memory_fts f WHERE f.item_id=m.id)"
                 )
+                # Подключаем уже существующую v0.8 память к графу при первой миграции.
+                if not existing_graph:
+                    for item in conn.execute(
+                        "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                        "ORDER BY updated_at DESC LIMIT 300"
+                    ).fetchall():
+                        self._link_local(conn,item["id"],item["content"])
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
@@ -214,14 +296,17 @@ class MemoryEngine:
                     updatedAt=row["updated_at"],kind=row["kind"],sourceMessageId=row["source_message_id"],
                     conversationId=row["conversation_id"],cloudAllowed=bool(row["cloud_allowed"]),
                     expiresAt=row["expires_at"],revision=row["revision"],status=row["status"],
-                    supersededBy=row["superseded_by"])
+                    supersededBy=row["superseded_by"],brain=row["brain"])
 
-    def add_manual(self, content: str, *, cloud_allowed: bool=False) -> dict:
+    def add_manual(self, content: str, *, cloud_allowed: bool=False, brain: str | None=None) -> dict:
         content=content.strip()
         if not 1<=len(content)<=500:
             raise ValueError("Факт должен содержать от 1 до 500 символов.")
         if SECRET.search(content):
             raise ValueError("Похоже на секрет или персональный идентификатор. Не сохраняйте его в память.")
+        if brain is not None and brain not in BRAINS:
+            raise ValueError("Неизвестная область памяти.")
+        brain=brain or classify_brain(content)
         ts=now()
         item_id=str(uuid.uuid4())
         with closing(db.connection(self.path)) as conn:
@@ -231,16 +316,19 @@ class MemoryEngine:
                     "INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                     (str(uuid.uuid4()),item_id,1,"created",content,ts))
                 conn.execute(
-                    "INSERT INTO memory_items(id,content,fingerprint,kind,status,cloud_allowed,created_at,updated_at) "
-                    "VALUES(?,?,?,'manual','confirmed',?,?,?)",
-                    (item_id,content,digest(content),int(cloud_allowed),ts,ts))
+                    "INSERT INTO memory_items(id,content,fingerprint,kind,status,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'manual','confirmed',?,?,?,?)",
+                    (item_id,content,digest(content),int(cloud_allowed),ts,ts,brain))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
+                self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         return self._item(row)
 
     def edit(self, item_id: str, *, content: str, cloud_allowed: bool, revision: int,
-             expires_at: int | None = None) -> dict | None:
+             expires_at: int | None = None, brain: str | None=None) -> dict | None:
         content=content.strip()
+        if brain is not None and brain not in BRAINS:
+            raise ValueError("Неизвестная область памяти.")
         if not 1<=len(content)<=500 or SECRET.search(content):
             raise ValueError("Недопустимое содержание воспоминания.")
         with closing(db.connection(self.path)) as conn:
@@ -255,12 +343,17 @@ class MemoryEngine:
                                  (old["fingerprint"],now()))
                 conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                              (str(uuid.uuid4()),item_id,revision+1,"edited",content,now()))
+                if digest(old["content"])!=digest(content) or (old["cloud_allowed"] and not cloud_allowed):
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
+                conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
-                    "updated_at=?,revision=revision+1 WHERE id=?",
-                    (content,digest(content),int(cloud_allowed),expires_at,now(),item_id))
+                    "brain=?,updated_at=?,revision=revision+1 WHERE id=?",
+                    (content,digest(content),int(cloud_allowed),expires_at,
+                     brain or old["brain"],now(),item_id))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
+                self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         return self._item(row)
 
@@ -293,6 +386,10 @@ class MemoryEngine:
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (old["fingerprint"],now()))
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
+                    conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
+                                 "WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
                     conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(target,))
                     conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(target,))
@@ -332,7 +429,7 @@ class MemoryEngine:
                               "ORDER BY created_at DESC LIMIT 100").fetchall()
         return [dict(id=r["id"],content=r["content"],sourceMessageId=r["source_message_id"],
                      conversationId=r["conversation_id"],createdAt=r["created_at"],
-                     conflictWith=r["conflict_with"]) for r in rows]
+                     conflictWith=r["conflict_with"],brain=r["brain"]) for r in rows]
 
     def review(self,candidate_id: str,approve: bool,cloud_allowed: bool=False) -> dict | None:
         with closing(db.connection(self.path)) as conn:
@@ -351,11 +448,12 @@ class MemoryEngine:
                 item_id=str(uuid.uuid4())
                 conn.execute(
                     "INSERT INTO memory_items(id,content,fingerprint,kind,status,source_message_id,"
-                    "conversation_id,cloud_allowed,created_at,updated_at) "
-                    "VALUES(?,?,?,'extracted','confirmed',?,?,?,?,?)",
+                    "conversation_id,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'extracted','confirmed',?,?,?,?,?,?)",
                     (item_id,row["content"],row["fingerprint"],row["source_message_id"],
-                     row["conversation_id"],int(cloud_allowed),now(),now()))
+                     row["conversation_id"],int(cloud_allowed),now(),now(),row["brain"]))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,row["content"]))
+                self._link_local(conn,item_id,row["content"])
                 conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                              (str(uuid.uuid4()),item_id,1,"approved",row["content"],now()))
                 if row["conflict_with"]:
@@ -370,6 +468,9 @@ class MemoryEngine:
                                 "superseded_by=?,updated_at=? WHERE id=?",
                                 (item_id,now(),previous["id"]))
                             conn.execute("DELETE FROM memory_fts WHERE item_id=?",(previous["id"],))
+                            conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                         (previous["id"],previous["id"]))
+                            conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(previous["id"],))
                             conn.execute("DELETE FROM memory_summaries")
                 conn.execute("UPDATE memory_candidates SET status='approved' WHERE id=?",(candidate_id,))
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
@@ -483,9 +584,10 @@ class MemoryEngine:
                     return  # история уже очищена, задача больше неактуальна
                 conn.execute(
                     "INSERT OR IGNORE INTO memory_candidates "
-                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with) "
-                    "VALUES(?,?,?,?,?,'pending',?,?)",
-                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with))
+                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
+                    "VALUES(?,?,?,?,?,'pending',?,?,?)",
+                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with,
+                     classify_brain(content)))
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -571,6 +673,13 @@ class MemoryEngine:
                              "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
                 conn.execute("DELETE FROM memory_recall_log WHERE memory_id IN "
                              "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
+                for item in ids:
+                    conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                 (item["id"],item["id"]))
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item["id"],))
+                conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
+                             "WHERE item_id IN (SELECT id FROM memory_items WHERE conversation_id=?)",
+                             (conversation_id,))
                 conn.execute("DELETE FROM memory_items WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
@@ -610,6 +719,31 @@ class MemoryEngine:
             out.append(self._item(row))
             if len(out)>=5:
                 break
+        # Один переход по проверенным локальным связям. Не обходим весь граф.
+        if out and len(out)<5:
+            seen={item["id"] for item in out}
+            with closing(db.connection(self.path)) as conn:
+                for seed in out[:3]:
+                    neighbors=conn.execute(
+                        "SELECT m.* FROM memory_links l JOIN memory_items m "
+                        "ON m.id=CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END "
+                        "WHERE (l.left_id=? OR l.right_id=?) AND l.weight>=0.18 "
+                        "AND m.status='confirmed' AND (m.conversation_id='global' OR m.conversation_id=?) "
+                        "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                        "ORDER BY l.weight DESC LIMIT 8",
+                        (seed["id"],seed["id"],seed["id"],conversation_id,now())
+                    ).fetchall()
+                    for neighbor in neighbors:
+                        if neighbor["id"] in seen or SECRET.search(neighbor["content"]):
+                            continue
+                        if cloud_mode and not neighbor["cloud_allowed"]:
+                            continue
+                        seen.add(neighbor["id"])
+                        out.append(self._item(neighbor))
+                        if len(out)>=5:
+                            break
+                    if len(out)>=5:
+                        break
         return out
 
     def preview(self, query: str, conversation_id: str, cloud_mode: bool) -> dict:
@@ -683,10 +817,245 @@ class MemoryEngine:
         return [dict(revision=r["revision"],action=r["action"],content=r["content"],
                      createdAt=r["created_at"]) for r in rows]
 
+    # Five-brain association graph: shared topics and true neural similarities.
+    # All references resolve to confirmed records, never to AI guesses.
+    def _link_local(self, conn: sqlite3.Connection, item_id: str, content: str) -> None:
+        source=_keywords(content)
+        if not source:
+            return
+        matches=[]
+        rows=conn.execute(
+            "SELECT id,content FROM memory_items WHERE id!=? AND status='confirmed' "
+            "AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC LIMIT 500",
+            (item_id,now())
+        ).fetchall()
+        for row in rows:
+            words=_keywords(row["content"])
+            common=len(source & words)
+            union=len(source | words)
+            strength=common / union if union else 0.0
+            if common and strength>=0.15:
+                matches.append((row["id"],strength))
+        for other,weight in sorted(matches,key=lambda v:v[1],reverse=True)[:8]:
+            left,right=sorted((item_id,other))
+            conn.execute("INSERT OR REPLACE INTO memory_links VALUES(?,?,?,?,?)",
+                         (left,right,"shared_topic",round(weight,4),now()))
+
+    def rebuild_links(self) -> int:
+        """Перестроить локальные связи без нейросети и без Cloud.ru."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("DELETE FROM memory_links WHERE relation='shared_topic'")
+                items=conn.execute(
+                    "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC LIMIT 300",(now(),)
+                ).fetchall()
+                for item in items:
+                    self._link_local(conn,item["id"],item["content"])
+                return conn.execute(
+                    "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
+                ).fetchone()[0]
+
+    def brains(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT brain,COUNT(*) AS total FROM memory_items "
+                "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?) GROUP BY brain",
+                (now(),)
+            ).fetchall()
+            links=conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0]
+            neural=conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0]
+        counts={name:0 for name in BRAINS}
+        counts.update({r["brain"]:r["total"] for r in rows if r["brain"] in BRAINS})
+        return {"brains":counts,"links":links,"neuralVectors":neural,
+                "embeddingModel":EMBED_MODEL,"embeddingDimensions":EMBED_DIMS}
+
+    def connections(self, item_id: str) -> list[dict]:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.*,l.relation,l.weight FROM memory_links l "
+                "JOIN memory_items m ON m.id=CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END "
+                "WHERE (l.left_id=? OR l.right_id=?) AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY l.weight DESC LIMIT 20",
+                (item_id,item_id,item_id,now())
+            ).fetchall()
+        return [{"item":self._item(r),"relation":r["relation"],"weight":r["weight"]} for r in rows]
+
+    @staticmethod
+    def _uuid(value: str) -> str:
+        try:
+            if str(uuid.UUID(value)) != value:
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Некорректный идентификатор запроса.") from None
+        return value
+
+    def _reserve_embedding(self, request_id: str, item_id: str, content: str) -> None:
+        self._uuid(request_id)
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                created=conn.execute(
+                    "INSERT OR IGNORE INTO memory_embedding_requests "
+                    "(request_id,item_id,content_digest,model,status,created_at) "
+                    "VALUES(?,?,?,?, 'pending',?)",
+                    (request_id,item_id,digest(content),EMBED_MODEL,now())
+                ).rowcount
+                if not created:
+                    raise ValueError("Этот запрос уже использован. Повторная платная отправка заблокирована.")
+
+    def _finish_embedding(self,request_id: str,status: str) -> None:
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("UPDATE memory_embedding_requests SET status=? WHERE request_id=?",
+                             (status,request_id))
+
+    @staticmethod
+    async def _call_embed(text: str) -> list[float]:
+        """One explicit potentially paid request. Never retry silently."""
+        from . import cloud
+        key=cloud.required_key()
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=12.0,read=30.0,write=15.0,pool=12.0),
+                follow_redirects=False
+            ) as client:
+                response=await client.post(
+                    cloud.BASE_URL+"/embeddings",
+                    headers={"Authorization":"Bearer "+key,"Accept":"application/json"},
+                    json={"model":EMBED_MODEL,"input":text}
+                )
+                response.raise_for_status()
+                result=response.json()
+            entries=result.get("data") if isinstance(result,dict) else None
+            embedding=entries[0].get("embedding") if isinstance(entries,list) and len(entries)==1 and isinstance(entries[0],dict) else None
+            if not isinstance(embedding,list) or len(embedding)!=EMBED_DIMS:
+                raise cloud.CloudError("Embedding-модель вернула несовместимую размерность.",502)
+            if any(isinstance(x,bool) or not isinstance(x,(float,int))
+                   or not math.isfinite(x) or abs(x)>100 for x in embedding):
+                raise cloud.CloudError("Embedding-модель вернула некорректные значения.",502)
+            vector=[float(x) for x in embedding]
+            if _cosine(vector,vector)<0.99:
+                raise cloud.CloudError("Embedding-модель вернула пустой вектор.",502)
+            return vector
+        except cloud.CloudError:
+            raise
+        except (ValueError,TypeError,KeyError):
+            raise cloud.CloudError("Cloud.ru вернул некорректный ответ embedding-модели.",502) from None
+        except httpx.HTTPError as exc:
+            raise cloud.request_error(exc) from None
+
+    async def embed_item(self,item_id: str,request_id: str) -> dict:
+        """Explicit paid operation; two independent consents + request UUID."""
+        from . import cloud
+        if not self.policy()["allow_cloud_embeddings"]:
+            raise ValueError("Нейроиндексация Cloud.ru отключена в настройках памяти.")
+        with closing(db.connection(self.path)) as conn:
+            row=conn.execute(
+                "SELECT * FROM memory_items WHERE id=? AND status='confirmed' "
+                "AND (expires_at IS NULL OR expires_at>?)",(item_id,now())
+            ).fetchone()
+            if row is None:
+                raise ValueError("Воспоминание отсутствует или устарело.")
+            if not row["cloud_allowed"] or SECRET.search(row["content"]):
+                raise ValueError("Это воспоминание нельзя передавать Cloud.ru.")
+            saved=conn.execute("SELECT model,content_digest FROM memory_vectors WHERE item_id=?",
+                               (item_id,)).fetchone()
+            if saved and saved["model"]==EMBED_MODEL and saved["content_digest"]==digest(row["content"]):
+                return {"status":"indexed","cached":True,"itemId":item_id}
+            content=row["content"]
+        self._reserve_embedding(request_id,item_id,content)
+        try:
+            vector=await self._call_embed(content)
+            with closing(db.connection(self.path)) as conn:
+                with conn:
+                    # Recheck consent, deletion, edits after the cloud request.
+                    item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+                    if (item is None or item["status"]!="confirmed"
+                            or not item["cloud_allowed"] or item["expires_at"] is not None and item["expires_at"]<=now()
+                            or digest(item["content"])!=digest(content)
+                            or not self.policy()["allow_cloud_embeddings"]):
+                        conn.execute("UPDATE memory_embedding_requests SET status='done' WHERE request_id=?",
+                                     (request_id,))
+                        return {"status":"discarded","cached":False,"itemId":item_id}
+                    conn.execute("INSERT OR REPLACE INTO memory_vectors VALUES(?,?,?,?,?,?)",
+                                 (item_id,EMBED_MODEL,digest(content),
+                                  json.dumps(vector,separators=(",",":")),len(vector),now()))
+                    conn.execute("DELETE FROM memory_links WHERE relation='neural_similarity' "
+                                 "AND (left_id=? OR right_id=?)",(item_id,item_id))
+                    others=conn.execute(
+                        "SELECT v.item_id,v.vector_json FROM memory_vectors v "
+                        "JOIN memory_items m ON m.id=v.item_id "
+                        "WHERE v.item_id!=? AND v.model=? AND v.dimensions=? AND m.status='confirmed' "
+                        "AND m.cloud_allowed=1 AND (m.expires_at IS NULL OR m.expires_at>?) "
+                        "ORDER BY v.created_at DESC LIMIT 300",
+                        (item_id,EMBED_MODEL,EMBED_DIMS,now())
+                    ).fetchall()
+                    neighbors=[]
+                    for other in others:
+                        value=_cosine(vector,json.loads(other["vector_json"]))
+                        if value>=0.78:
+                            neighbors.append((other["item_id"],value))
+                    for other,weight in sorted(neighbors,key=lambda value:value[1],reverse=True)[:8]:
+                        left,right=sorted((item_id,other))
+                        conn.execute("INSERT OR REPLACE INTO memory_links VALUES(?,?,?,?,?)",
+                                     (left,right,"neural_similarity",round(weight,4),now()))
+                    conn.execute("UPDATE memory_embedding_requests SET status='done' WHERE request_id=?",
+                                 (request_id,))
+            return {"status":"indexed","cached":False,"itemId":item_id}
+        except Exception:
+            self._finish_embedding(request_id,"unknown")
+            raise
+
+    async def neural_search(self,query: str,conversation_id: str,request_id: str) -> list[dict]:
+        """Neural query is EXPLICIT and potentially paid. No background paid recall."""
+        if not self.policy()["allow_cloud_embeddings"]:
+            raise ValueError("Нейропоиск Cloud.ru отключён.")
+        if not 2<=len(query)<=200 or SECRET.search(query):
+            raise ValueError("Недопустимый поисковый запрос.")
+        with closing(db.connection(self.path)) as conn:
+            exists=conn.execute("SELECT 1 FROM conversations WHERE id=?",(conversation_id,)).fetchone()
+            if not exists:
+                raise ValueError("Диалог не найден.")
+        self._reserve_embedding(request_id,"query",query)
+        try:
+            vector=await self._call_embed(query)
+            with closing(db.connection(self.path)) as conn:
+                rows=conn.execute(
+                    "SELECT m.*,v.vector_json FROM memory_vectors v "
+                    "JOIN memory_items m ON m.id=v.item_id WHERE v.model=? AND v.dimensions=? "
+                    "AND v.content_digest=m.fingerprint AND m.status='confirmed' "
+                    "AND m.cloud_allowed=1 AND (m.conversation_id='global' OR m.conversation_id=?) "
+                    "AND (m.expires_at IS NULL OR m.expires_at>?) LIMIT 1000",
+                    (EMBED_MODEL,EMBED_DIMS,conversation_id,now())
+                ).fetchall()
+            result=[]
+            for row in rows:
+                if SECRET.search(row["content"]):
+                    continue
+                similarity=_cosine(vector,json.loads(row["vector_json"]))
+                if similarity>=0.4:
+                    result.append({"item":self._item(row),"similarity":round(similarity,4)})
+            self._finish_embedding(request_id,"done")
+            return sorted(result,key=lambda x:x["similarity"],reverse=True)[:10]
+        except Exception:
+            self._finish_embedding(request_id,"unknown")
+            raise
+
+    def delete_vectors(self) -> int:
+        """Delete local embeddings and neural graph while retaining facts."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                count=conn.execute("DELETE FROM memory_vectors").rowcount
+                conn.execute("DELETE FROM memory_links WHERE relation='neural_similarity'")
+        return count
+
     def status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             confirmed=conn.execute("SELECT COUNT(*) FROM memory_items WHERE status='confirmed'").fetchone()[0]
             candidates=conn.execute("SELECT COUNT(*) FROM memory_candidates WHERE status='pending'").fetchone()[0]
             queued=conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE state IN ('pending','running')").fetchone()[0]
             summaries=conn.execute("SELECT COUNT(*) FROM memory_summaries WHERE status='draft'").fetchone()[0]
-        return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,policy=self.policy())
+        return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
+                    policy=self.policy(),network=self.brains())

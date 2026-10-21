@@ -1,23 +1,32 @@
 import type { Message } from '../store/useAppStore';
 
 export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number };
+export type MemoryBrain = 'identity' | 'episodes' | 'goals' | 'habits' | 'knowledge';
+export type MemoryNetwork = {
+  brains: Record<MemoryBrain, number>; links: number; neuralVectors: number;
+  embeddingModel: string; embeddingDimensions: number;
+};
+export type MemoryConnection = { item: MemoryFact; relation: 'shared_topic' | 'neural_similarity'; weight: number };
+export type MemoryNeuralMatch = { item: MemoryFact; similarity: number };
 export type MemoryFact = {
   id: string; content: string; createdAt: number; updatedAt: number;
   kind: string; status: string; sourceMessageId: string | null;
-  conversationId: string; cloudAllowed: boolean; expiresAt: number | null; revision: number;
+  conversationId: string; cloudAllowed: boolean; expiresAt: number | null; revision: number; brain: MemoryBrain;
 };
 export type MemoryCandidate = {
   id: string; content: string; sourceMessageId: string; conversationId: string; createdAt: number;
-  conflictWith: string | null;
+  conflictWith: string | null; brain: MemoryBrain;
 };
 export type MemorySummary = {
   conversationId: string; content: string; status: string; cloudAllowed: boolean; updatedAt: number;
 };
 export type MemoryPolicy = {
   allow_cloud_notes: boolean; allow_cloud_facts: boolean;
-  auto_extract: boolean; auto_summaries: boolean;
+  auto_extract: boolean; auto_summaries: boolean; allow_cloud_embeddings: boolean;
 };
-export type MemoryStatus = { facts: number; pending: number; jobs: number; summaries: number; policy: MemoryPolicy };
+export type MemoryStatus = {
+  facts: number; pending: number; jobs: number; summaries: number; policy: MemoryPolicy; network: MemoryNetwork;
+};
 export type MemoryExplanation = {
   item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
   revisions: { revision: number; action: string; content: string; createdAt: number }[];
@@ -80,15 +89,18 @@ export async function searchChat(q: string, conversationId?: string): Promise<Ch
 export async function getMemoryFacts(): Promise<MemoryFact[]> {
   return (await parse<{ facts: MemoryFact[] }>(await fetch('/api/memory/facts', { cache: 'no-store' }))).facts;
 }
-export async function addMemoryFact(content: string, cloudAllowed = false): Promise<MemoryFact> {
-  return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content, cloudAllowed }) }));
+export async function addMemoryFact(
+  content: string, cloudAllowed = false, brain: MemoryBrain | null = null,
+): Promise<MemoryFact> {
+  return parse(await fetch('/api/memory/facts', { method: 'POST', headers, body: JSON.stringify({ content, cloudAllowed, brain }) }));
 }
 
 export async function updateMemoryFact(
   fact: MemoryFact, content: string, cloudAllowed: boolean, expiresAt: number | null = fact.expiresAt,
+  brain: MemoryBrain = fact.brain,
 ): Promise<MemoryFact> {
   return parse(await fetch('/api/memory/facts/' + encodeURIComponent(fact.id), {
-    method: 'PUT', headers, body: JSON.stringify({ content, cloudAllowed, revision: fact.revision, expiresAt }),
+    method: 'PUT', headers, body: JSON.stringify({ content, cloudAllowed, revision: fact.revision, expiresAt, brain }),
   }));
 }
 
@@ -107,6 +119,44 @@ export async function getMemoryUsage(): Promise<MemoryUsage[]> {
   return (await parse<{ entries: MemoryUsage[] }>(
     await fetch('/api/memory/usage', { cache: 'no-store' }),
   )).entries;
+}
+
+export async function rebuildMemoryBrainLinks(): Promise<number> {
+  return (await parse<{ links: number }>(await fetch('/api/memory/brains/rebuild', {
+    method: 'POST', headers,
+  }))).links;
+}
+
+export async function getMemoryBrains(): Promise<MemoryNetwork> {
+  return parse(await fetch('/api/memory/brains', { cache: 'no-store' }));
+}
+
+export async function getMemoryBrainLinks(id: string): Promise<MemoryConnection[]> {
+  return (await parse<{ connections: MemoryConnection[] }>(
+    await fetch('/api/memory/brains/' + encodeURIComponent(id) + '/links', { cache: 'no-store' }),
+  )).connections;
+}
+
+export async function indexMemoryNeural(itemId: string, requestId: string): Promise<{ status: string; cached: boolean }> {
+  return parse(await fetch('/api/memory/neural/index', {
+    method: 'POST', headers, body: JSON.stringify({ itemId, requestId }),
+  }));
+}
+
+export async function searchMemoryNeural(
+  q: string, requestId: string, conversationId = 'main',
+): Promise<MemoryNeuralMatch[]> {
+  return (await parse<{ matches: MemoryNeuralMatch[] }>(
+    await fetch('/api/memory/neural/search', {
+      method: 'POST', headers, body: JSON.stringify({ q, requestId, conversationId }),
+    }),
+  )).matches;
+}
+
+export async function clearMemoryNeuralVectors(): Promise<number> {
+  return (await parse<{ deleted: number }>(
+    await fetch('/api/memory/neural/vectors', { method: 'DELETE', headers }),
+  )).deleted;
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {

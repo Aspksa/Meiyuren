@@ -4,12 +4,19 @@ import {
   getMemoryPolicy, getMemoryStatus, getMemorySummaries, loadMemory, processMemoryJobs,
   removeMemoryFact, reviewMemoryCandidate, reviewMemorySummary, saveMemory,
   setMemoryPolicy, updateMemoryFact, previewMemoryRecall, getMemoryUsage,
+  getMemoryBrainLinks, indexMemoryNeural, searchMemoryNeural, clearMemoryNeuralVectors,
+  rebuildMemoryBrainLinks,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
-  MemoryStatus, MemorySummary, MemoryUsage,
+  MemoryStatus, MemorySummary, MemoryUsage, MemoryBrain, MemoryConnection, MemoryNeuralMatch,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
+
+const BRAIN_NAMES: Record<MemoryBrain, string> = {
+  identity: 'Личность', episodes: 'События', goals: 'Цели',
+  habits: 'Привычки', knowledge: 'Знания',
+};
 
 export function MemoryEditor({ active }: { active: boolean }) {
   const clearChat = useAppStore(s => s.clearChat);
@@ -21,6 +28,11 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [factDraft, setFactDraft] = useState('');
   const [factCloud, setFactCloud] = useState(false);
+  const [brainDraft, setBrainDraft] = useState<MemoryBrain | ''>('');
+  const [connections, setConnections] = useState<MemoryConnection[]>([]);
+  const [connectedSource, setConnectedSource] = useState('');
+  const [neuralQuery, setNeuralQuery] = useState('');
+  const [neuralMatches, setNeuralMatches] = useState<MemoryNeuralMatch[] | null>(null);
   const [explanation, setExplanation] = useState<MemoryExplanation | null>(null);
   const [recallQuery, setRecallQuery] = useState('');
   const [recallCloud, setRecallCloud] = useState(true);
@@ -68,7 +80,9 @@ export function MemoryEditor({ active }: { active: boolean }) {
   }
 
   async function updatePolicy(key: keyof MemoryPolicy, value: boolean) {
-    if (value && (key === 'allow_cloud_notes' || key === 'allow_cloud_facts')) {
+    if (value && key === 'allow_cloud_embeddings') {
+      if (!window.confirm('Разрешить отдельные ручные платные запросы к embedding-модели Cloud.ru? Самостоятельный фоновый запуск запрещён.')) return;
+    } else if (value && (key === 'allow_cloud_notes' || key === 'allow_cloud_facts')) {
       if (!window.confirm('Разрешить передачу указанной категории памяти в Cloud.ru при включённом облачном чате?')) return;
     }
     await action(async () => {
@@ -80,8 +94,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
   async function addFact() {
     if (!factDraft.trim()) return;
     await action(async () => {
-      await addMemoryFact(factDraft.trim(), factCloud);
-      setFactDraft(''); setFactCloud(false);
+      await addMemoryFact(factDraft.trim(), factCloud, brainDraft || null);
+      setFactDraft(''); setFactCloud(false); setBrainDraft('');
       return 'Воспоминание сохранено.';
     });
   }
@@ -162,6 +176,49 @@ export function MemoryEditor({ active }: { active: boolean }) {
     });
   }
 
+  async function setBrain(fact: MemoryFact, brain: MemoryBrain) {
+    await action(async () => {
+      await updateMemoryFact(fact, fact.content, fact.cloudAllowed, fact.expiresAt, brain);
+      return 'Область долгосрочной памяти обновлена.';
+    });
+  }
+
+  async function showLinks(fact: MemoryFact) {
+    await action(async () => {
+      const found = await getMemoryBrainLinks(fact.id);
+      setConnectedSource(fact.content);
+      setConnections(found);
+      return 'Найдено связанных воспоминаний: ' + found.length;
+    });
+  }
+
+  async function indexNeural(fact: MemoryFact) {
+    if (!window.confirm('Создать нейровектор этого факта через Cloud.ru? Текст будет передан провайдеру; операция может быть платной.')) return;
+    await action(async () => {
+      const result = await indexMemoryNeural(fact.id, crypto.randomUUID());
+      return result.cached ? 'Нейровектор уже сохранён.' : 'Нейровектор сохранён в SQLite.';
+    });
+  }
+
+  async function neuralSearch() {
+    if (neuralQuery.trim().length < 2) return;
+    if (!window.confirm('Отправить поисковый вопрос embedding-модели Cloud.ru? Это может быть платным запросом.')) return;
+    await action(async () => {
+      const matches = await searchMemoryNeural(neuralQuery.trim(), crypto.randomUUID());
+      setNeuralMatches(matches);
+      return 'Нейросетевой поиск выполнен.';
+    });
+  }
+
+  async function deleteNeural() {
+    if (!window.confirm('Удалить все локальные нейровекторы и нейросетевые связи? Обычные воспоминания сохранятся.')) return;
+    await action(async () => {
+      const count = await clearMemoryNeuralVectors();
+      setNeuralMatches(null);
+      return 'Удалено нейровекторов: ' + count;
+    });
+  }
+
   async function eraseHistory() {
     if (!window.confirm('Удалить историю ОСНОВНОГО диалога вместе с её производной памятью? Другие диалоги и глобальная память останутся.')) return;
     await action(async () => {
@@ -175,11 +232,26 @@ export function MemoryEditor({ active }: { active: boolean }) {
     <section className="memory-editor memory-core" aria-label="Управление памятью Meiyuren">
       <h3>Memory Core · умная память</h3>
       <p>SQLite работает локально. Новые факты предлагает автоматический анализ без AI, но сохраняются они только после подтверждения.</p>
-      {status && <div className="memory-core__stats">
-        <span>Фактов: {status.facts}</span>
-        <span>Ожидают: {status.pending}</span>
-        <span>Очередь: {status.jobs}</span>
-      </div>}
+      {status && <>
+        <div className="memory-core__stats">
+          <span>Фактов: {status.facts}</span>
+          <span>Ожидают: {status.pending}</span>
+          <span>Очередь: {status.jobs}</span>
+          <span>Связей: {status.network.links}</span>
+          <span>Нейровекторов: {status.network.neuralVectors}</span>
+        </div>
+        <h4>Пять связанных мозгов долгосрочной памяти</h4>
+        <div className="memory-core__brains">
+          {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(key => <div key={key}>
+            <strong>{BRAIN_NAMES[key]}</strong>
+            <span>{status.network.brains[key] ?? 0}</span>
+          </div>)}
+        </div>
+      </>}
+      <button type="button" disabled={busy} onClick={() => void action(async () => {
+        const links = await rebuildMemoryBrainLinks();
+        return 'Локальных связей перестроено: ' + links + '. Cloud.ru не использовался.';
+      })}>Перестроить связи пяти мозгов</button>
       <button type="button" disabled={busy} onClick={() => void action(async () => {
         const result = await processMemoryJobs();
         return 'Локально обработано задач: ' + result.processed;
@@ -192,6 +264,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
         ['allow_cloud_facts', 'Разрешить передачу одобренных фактов Cloud.ru'],
         ['auto_extract', 'Автоматически искать кандидатов (локально)'],
         ['auto_summaries', 'Автоматически создавать выписки (локально)'],
+        ['allow_cloud_embeddings', 'Разрешить ручную нейроиндексацию через Cloud.ru (может быть платной)'],
       ] as const).map(([key, caption]) =>
         <label className="memory-core__toggle" key={key}>
           <input type="checkbox" checked={policy[key]} disabled={busy}
@@ -212,6 +285,15 @@ export function MemoryEditor({ active }: { active: boolean }) {
         placeholder="Например: я изучаю Python"
         onChange={e => setFactDraft(e.target.value)} />
       <label className="memory-core__toggle">
+        <span>Мозг для нового воспоминания</span>
+        <select aria-label="Область нового воспоминания" value={brainDraft}
+          disabled={busy} onChange={event => setBrainDraft(event.target.value as MemoryBrain | '')}>
+          <option value="">Автоматически по тексту</option>
+          {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(key =>
+            <option key={key} value={key}>{BRAIN_NAMES[key]}</option>)}
+        </select>
+      </label>
+      <label className="memory-core__toggle">
         <input type="checkbox" disabled={busy} checked={factCloud} onChange={e => {
           if (e.target.checked && !window.confirm('Разрешить этому факту передачу Cloud.ru?')) return;
           setFactCloud(e.target.checked);
@@ -225,6 +307,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
       <ul className="memory-core__list">
         {candidates.map(candidate => <li key={candidate.id}>
           <span>{candidate.content}</span>
+          <small>Предложенная область: {BRAIN_NAMES[candidate.brain]}</small>
           {candidate.conflictWith && <small>⚠ Возможное противоречие с сохранённым фактом</small>}
           <div className="memory-core__actions">
             <button type="button" disabled={busy} onClick={() => void review(candidate, true)}>Запомнить</button>
@@ -238,10 +321,21 @@ export function MemoryEditor({ active }: { active: boolean }) {
       <ul className="memory-core__list">
         {facts.map(fact => <li key={fact.id}>
           <span>{fact.content}</span>
-          <small>{fact.kind === 'legacy' ? 'Из прежней версии — источник не подтверждён' : 'Ревизия ' + fact.revision}
+          <small>Мозг: {BRAIN_NAMES[fact.brain]} · {fact.kind === 'legacy' ? 'Из прежней версии — источник не подтверждён' : 'Ревизия ' + fact.revision}
             {fact.cloudAllowed ? ' · Cloud разрешён' : ' · Только локально'}</small>
+          <label className="memory-core__toggle">
+            <span>Тип памяти</span>
+            <select aria-label={'Мозг воспоминания ' + fact.content} disabled={busy}
+              value={fact.brain} onChange={event => void setBrain(fact, event.target.value as MemoryBrain)}>
+              {(Object.keys(BRAIN_NAMES) as MemoryBrain[]).map(key =>
+                <option key={key} value={key}>{BRAIN_NAMES[key]}</option>)}
+            </select>
+          </label>
           <div className="memory-core__actions">
             <button type="button" disabled={busy} onClick={() => void explain(fact)}>Почему?</button>
+            <button type="button" disabled={busy} onClick={() => void showLinks(fact)}>Нейросвязи</button>
+            {policy?.allow_cloud_embeddings && fact.cloudAllowed && <button type="button"
+              disabled={busy} onClick={() => void indexNeural(fact)}>Создать нейровектор</button>}
             <button type="button" disabled={busy} onClick={() => void editFact(fact)}>Изменить</button>
             <button type="button" disabled={busy} onClick={() => void setExpiry(fact)}>Срок</button>
             <button type="button" disabled={busy} onClick={() => void toggleFactCloud(fact)}>{fact.cloudAllowed ? 'Запретить Cloud' : 'Разрешить Cloud'}</button>
@@ -249,6 +343,19 @@ export function MemoryEditor({ active }: { active: boolean }) {
           </div>
         </li>)}
       </ul>
+
+      {connectedSource && <section className="memory-core__explanation">
+        <h4>Связи пяти мозгов</h4>
+        <p>Исходное воспоминание: {connectedSource}</p>
+        {connections.length === 0 && <p>Пока нет связанных воспоминаний.</p>}
+        <ul className="memory-core__list">
+          {connections.map(edge => <li key={edge.item.id + edge.relation}>
+            {BRAIN_NAMES[edge.item.brain]} · {edge.item.content}
+            <small>{edge.relation === 'neural_similarity' ? 'Нейросетевая близость' : 'Общая тема'} · {Math.round(edge.weight * 100)}%</small>
+          </li>)}
+        </ul>
+        <button type="button" onClick={() => { setConnectedSource(''); setConnections([]); }}>Закрыть связи</button>
+      </section>}
 
       {explanation && <section className="memory-core__explanation" aria-label="Происхождение воспоминания">
         <h4>Почему Мэйюрэн это помнит?</h4>
@@ -263,6 +370,22 @@ export function MemoryEditor({ active }: { active: boolean }) {
         <button type="button" onClick={() => setExplanation(null)}>Закрыть</button>
       </section>}
 
+      <h4>Семантический нейропоиск Cloud.ru</h4>
+      <p>Только вручную после подтверждения платного вызова. Поиск идёт по ранее созданным нейровекторам разрешённых фактов.</p>
+      <input aria-label="Вопрос нейропоиска" maxLength={200} value={neuralQuery}
+        placeholder="Найти воспоминание по смыслу" onChange={e => setNeuralQuery(e.target.value)} />
+      <div className="memory-core__actions">
+        <button type="button" disabled={busy || !policy?.allow_cloud_embeddings || neuralQuery.trim().length < 2}
+          onClick={() => void neuralSearch()}>Нейропоиск (Cloud.ru)</button>
+        <button type="button" disabled={busy} onClick={() => void deleteNeural()}>Удалить нейровекторы</button>
+      </div>
+      {neuralMatches && <ul className="memory-core__list">
+        {neuralMatches.length === 0 && <li>Подходящих нейровекторов не найдено.</li>}
+        {neuralMatches.map(match => <li key={match.item.id}>
+          {BRAIN_NAMES[match.item.brain]} · {match.item.content}
+          <small>Сходство: {Math.round(match.similarity * 100)}%</small>
+        </li>)}
+      </ul>}
       <h4>Какую память Мэйюрэн использует?</h4>
       <p>Предпросмотр выбора фактов. Он ничего не отправляет в Cloud.ru.</p>
       <input aria-label="Проверочный вопрос памяти" maxLength={200}
