@@ -2298,6 +2298,31 @@ class MemoryEngine:
             left_id, right_id, helpful, eligible=set(cortex.nodes))
         return {"adjustment": adjustment, "helpful": helpful}
 
+    def adaptive_brain_overview(self, conversation_id: str,
+                                cloud_mode: bool=False) -> dict:
+        """Privacy-filtered proposal map: no persistent mutation or hidden facts."""
+        from .omega_bio import AdaptiveBrain
+        from .infinity_growth import Evidence, InfinityGrowth
+        rows=self._visible_deep_rows(conversation_id,cloud_mode)
+        growth=InfinityGrowth(
+            Evidence(id=r["id"],brain=r["brain"],text=r["content"],
+                     source=r["sourceMessageId"],scope=conversation_id)
+            for r in rows if r.get("sourceMessageId")
+        )
+        proposals=growth.grow(max_new=16)
+        adapter=AdaptiveBrain()
+        for node in proposals:
+            sources={growth.memories[i].source for i in node.evidence_ids
+                     if i in growth.memories}
+            try:
+                adapter.propose_growth(node.parent,node.topic,sources)
+            except ValueError:
+                continue
+        return {**adapter.diagnostics(),
+                "candidateExperts":len(adapter.proposals),
+                "sourceScoped":True, "mode":"read_only_experiment",
+                "activeTopologyUnchanged":True}
+
     def infinity_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
         """On-demand, visibility-filtered, bounded growth proposal; no mutations."""
         from .infinity_growth import Evidence, InfinityGrowth
