@@ -37,7 +37,7 @@ def test_five_brains_classify_and_persist(app):
         manual(app,"Каждый день тренирую Python"),
         manual(app,"Изучаю Python")
     ]
-    assert [x["brain"] for x in items]==list(BRAINS)
+    assert [x["brain"] for x in items]==list(BRAINS[:5])
     status=client.get("/api/memory/brains")
     assert status.status_code==200
     assert all(status.json()["brains"][name]==1 for name in BRAINS)
