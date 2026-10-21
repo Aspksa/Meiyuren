@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from . import cloud, db, history
 from .memory_engine import MemoryEngine, SECRET
 from .evolution_runtime import EvolutionRuntime
+from .idle import IdleRuntime
 from .neural_operations import NeuralOperations
 from .replies import generate_reply
 from .brain_diagnostics import is_diagnostic_request, diagnostic_report
@@ -128,6 +129,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     engine.initialize(backup_existing=False)
     evolution = EvolutionRuntime(database.with_name('cognitive_evolution.sqlite3'), engine)
     neural_ops = NeuralOperations(database)
+    idle = IdleRuntime(database, engine)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -139,6 +141,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                     await asyncio.to_thread(engine.process_pending, 8)
                     await asyncio.to_thread(evolution.tick)
                     await asyncio.to_thread(neural_ops.tick)
+                    await asyncio.to_thread(idle.tick)  # только после 10 минут тишины
                 except Exception:
                     logging.getLogger(__name__).exception("Memory worker: локальная задача завершилась с ошибкой")
                 try:
@@ -153,13 +156,13 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.27.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.28.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
     @app.middleware("http")
     async def protect_cloud_settings(request: Request, call_next):
-        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory", "/api/conversations", "/api/evolution", "/api/neural"))
+        protected_path = request.url.path.startswith(("/api/cloud/", "/api/chat/", "/api/memory", "/api/conversations", "/api/evolution", "/api/neural", "/api/idle"))
         if protected_path and request.method not in ("GET", "HEAD", "OPTIONS"):
             # Для всех изменений нужен нестандартный заголовок и проверка Origin.
             # Сторонний веб-сайт не может отправить этот заголовок без CORS-разрешения.
@@ -170,6 +173,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             parsed = urlsplit(origin)
             if (request.url.path.startswith("/api/cloud/") and not origin) or (origin and (parsed.scheme != "http" or parsed.netloc != request.headers.get("host", "") or parsed.path)):
                 return JSONResponse({"detail": "Настройки доступны только из локального приложения."}, status_code=403)
+        if request.url.path.startswith("/api/chat/") and request.method == "POST":
+            idle.touch()  # пользователь пишет: работа простоя ставится на паузу
         response = await call_next(request)
         if protected_path:
             response.headers["Cache-Control"] = "no-store"
@@ -197,6 +202,22 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/neural/operations/consolidate")
     def neural_operations_consolidate():
         return neural_ops.tick(force=True)
+
+    @app.get("/api/idle/status")
+    def idle_status():
+        return idle.status()
+
+    @app.get("/api/idle/briefing")
+    def idle_briefing():
+        return {"briefing": idle.briefing()}
+
+    @app.post("/api/idle/run")
+    async def idle_run():
+        return await asyncio.to_thread(idle.tick, force=True)
+
+    @app.post("/api/idle/seen")
+    def idle_seen():
+        return {"seen": idle.mark_seen()}
 
     @app.get("/api/evolution/status")
     def evolution_runtime_status():

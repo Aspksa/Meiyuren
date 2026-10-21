@@ -1,10 +1,10 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { avatarUrl } from '../lib/avatars';
 import {
-  createConversation, deleteConversation, getConversations, getEngineMode, loadHistory, loadOlderHistory,
-  rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
+  createConversation, deleteConversation, describeIdleReport, getConversations, getEngineMode, getIdleBriefing,
+  loadHistory, loadOlderHistory, markIdleBriefingSeen, rateRecalledMemory, renameConversation, searchChat, streamMessage, StreamError,
 } from '../services/chatApi';
-import type { Conversation, ChatMatch, Exchange, RecallTrace } from '../services/chatApi';
+import type { Conversation, ChatMatch, Exchange, IdleBriefing, RecallTrace } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
 const BRAIN_LABELS: Record<string, string> = {
@@ -35,6 +35,7 @@ export function ChatPanel() {
   // Воспоминания, использованные в ответах этой сессии: assistant message id → след.
   const [traces, setTraces] = useState<Record<string, RecallTrace>>({});
   const [rated, setRated] = useState<Record<string, boolean>>({});
+  const [briefing, setBriefing] = useState<IdleBriefing | null>(null);
   const controller = useRef<AbortController | null>(null);
   const pending = useRef<{ text: string; conversationId: string; id: string } | null>(null);
   const currentConversation = useRef(conversationId);
@@ -45,7 +46,13 @@ export function ChatPanel() {
     if (!open) return;
     void getConversations().then(setConversations).catch(() => undefined);
     void getEngineMode().then(setMode).catch(() => undefined);
+    void getIdleBriefing().then(setBriefing).catch(() => undefined);
   }, [open]);
+
+  function dismissBriefing() {
+    setBriefing(null);
+    void markIdleBriefingSeen().catch(() => undefined);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -271,6 +278,7 @@ export function ChatPanel() {
           {m.role === 'user' ? 'Вы' : 'Мэйюрэн'}: {m.text.slice(0, 100)}
         </button>)}
       </div>}
+      {briefing && <IdleCard briefing={briefing} onClose={dismissBriefing} />}
       <div className="chat-panel__messages" ref={scroll} aria-live="polite" aria-relevant="additions text">
         {loading && <div className="chat-panel__empty">Загружаю историю…</div>}
         {!loading && hasOlder && <button type="button" className="chat-panel__older" onClick={() => void showOlder()}>
@@ -331,4 +339,22 @@ export function ChatPanel() {
       </div>
     </section>
   );
+}
+
+function IdleCard({ briefing, onClose }: { briefing: IdleBriefing; onClose: () => void }) {
+  const lines = describeIdleReport(briefing.report);
+  const unfinished = briefing.report.unfinished?.items ?? [];
+  return <aside className="chat-idle" aria-label="Пока тебя не было">
+    <div className="chat-idle__head">
+      <strong>Пока тебя не было</strong>
+      <button type="button" aria-label="Скрыть отчёт" onClick={onClose}>×</button>
+    </div>
+    {lines.length > 0 && <ul>{lines.map(line => <li key={line}>{line}</li>)}</ul>}
+    {unfinished.length > 0 && <>
+      <div className="chat-idle__sub">Можем продолжить:</div>
+      <ul>{unfinished.map(item => <li key={item}>{item}</li>)}</ul>
+    </>}
+    {briefing.interrupted && <div className="chat-idle__sub">Работу прервало твоё сообщение, остальное доделаю в следующий раз.</div>}
+    <div className="chat-idle__note">Всё сделано локально, без Cloud.ru и без затрат.</div>
+  </aside>;
 }

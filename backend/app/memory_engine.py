@@ -166,6 +166,41 @@ PREFERENCE = re.compile(
 )
 
 
+VECTOR_TERMS=96
+FUZZY_MATCH=0.4
+
+
+def local_vector(text: str) -> dict[str, float]:
+    """Символьные триграммы ключевых основ: нечёткий офлайн-поиск без модели.
+
+    Связывает формы и родственные слова («программист» и «программирование»),
+    но не синонимы с разными корнями («кофе» и «эспрессо»).
+    """
+    grams: dict[str, int]={}
+    for word in _keywords(text):
+        word="^"+word[:40]+"$"
+        for i in range(len(word)-2):
+            grams[word[i:i+3]]=grams.get(word[i:i+3],0)+1
+    top=sorted(grams.items(),key=lambda x:(-x[1],x[0]))[:VECTOR_TERMS]
+    norm=math.sqrt(sum(v*v for _,v in top))
+    return {g:round(v/norm,5) for g,v in top} if norm else {}
+
+
+def vector_similarity(a: dict[str, float], b: dict[str, float]) -> float:
+    if len(a)>len(b):
+        a,b=b,a
+    return sum(v*b.get(k,0.0) for k,v in a.items())
+
+
+def drop_backups(path: Path) -> int:
+    """Удалить снимки режима простоя: в них могло остаться забытое."""
+    removed=0
+    for item in (Path(path).parent/"backups").glob("meiyuren-*.sqlite3"):
+        item.unlink(missing_ok=True)
+        removed+=1
+    return removed
+
+
 def now() -> int:
     return int(time.time() * 1000)
 
@@ -437,6 +472,20 @@ class MemoryEngine:
                     content_digest TEXT NOT NULL, vector_json TEXT NOT NULL,
                     dimensions INTEGER NOT NULL, created_at INTEGER NOT NULL
                 )""")
+                # Режим простоя (v0.28): создаются здесь, а не на лету — иначе гонка схемы с FTS5.
+                conn.execute("""CREATE TABLE IF NOT EXISTS idle_runs (
+                    id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, finished_at INTEGER,
+                    interrupted INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0,
+                    report_json TEXT NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_strength (
+                    memory_id TEXT PRIMARY KEY, strength REAL NOT NULL, uses INTEGER NOT NULL,
+                    last_used INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_local_vectors (
+                    item_id TEXT PRIMARY KEY, digest TEXT NOT NULL, vector_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_embedding_requests (
                     request_id TEXT PRIMARY KEY, item_id TEXT NOT NULL,
                     content_digest TEXT NOT NULL, model TEXT NOT NULL,
@@ -652,6 +701,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_local_vectors WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_strength WHERE memory_id=?",(target,))
                     conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
                                  (target,target))
                     conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
@@ -669,6 +720,7 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_items WHERE id=?",(target,))
                 # Связанная с историей память могла попасть в любую выписку.
                 conn.execute("DELETE FROM memory_summaries")
+        drop_backups(self.path)  # снимок простоя не должен вернуть забытое
         if self.policy()["auto_growth"]:
             self.grow_branches()
         self.rebuild_deep_index()
@@ -1038,6 +1090,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
+                    conn.execute("DELETE FROM memory_local_vectors WHERE item_id=?",(item_id,))
+                    conn.execute("DELETE FROM memory_strength WHERE memory_id=?",(item_id,))
                     conn.execute("DELETE FROM memory_synaptic_weights WHERE left_id=? OR right_id=?",
                                  (item_id,item_id))
                     conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(item_id,))
@@ -1053,6 +1107,8 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_jobs WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_recall_queries WHERE conversation_id=?",(conversation_id,))
+        if ids:
+            drop_backups(self.path)
         if self.policy()["auto_growth"]:
             self.grow_branches()
         self.rebuild_deep_index()
@@ -2369,10 +2425,20 @@ class MemoryEngine:
         }
         word_weight,route_weight,feedback_weight=strategy_weights.get(
             strategy,strategy_weights["balanced"])
+        # Режим простоя (v0.28): сила факта и локальные векторы, если уже посчитаны.
+        with closing(db.connection(self.path)) as conn:
+            strength={r[0]:r[1] for r in conn.execute("SELECT memory_id,strength FROM memory_strength")}
+            vectors={r[0]:r[1] for r in conn.execute("SELECT item_id,vector_json FROM memory_local_vectors")}
+        query_vector=local_vector(query) if vectors else {}
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
             relevance=shared*word_weight+(2.0 if row["id"] in base else 0)
+            if not relevance and query_vector and row["id"] in vectors:
+                # Нечёткое совпадение форм слова, когда точных общих слов нет.
+                similarity=vector_similarity(query_vector,json.loads(vectors[row["id"]]))
+                if similarity>=FUZZY_MATCH:
+                    relevance=similarity*word_weight
             if row["brain"] in routed and shared:
                 relevance+=route_weight
             if continue_mode and row["brain"] in ("projects","goals","decisions"):
@@ -2386,6 +2452,9 @@ class MemoryEngine:
             # Лайк усиливает только уже подходящий к вопросу факт и не тащит
             # его в каждый ответ.
             relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*feedback_weight
+            if row["id"] in strength:
+                # Используемое крепнет, забытое тускнеет — но не удаляется.
+                relevance+=(strength[row["id"]]-0.45)*0.8
             if relevance<=0:
                 continue
             scored.append((relevance,row["updatedAt"],row))
