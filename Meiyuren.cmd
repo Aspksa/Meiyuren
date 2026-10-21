@@ -17,13 +17,17 @@ if exist "%~dp0runtime\node.exe" (
   set "NODE_BIN=node.exe"
 )
 
-rem Install dependencies only when they are missing.
-if not exist "%~dp0node_modules\vite\package.json" (
-  echo [Meiyuren] Installing dependencies, this happens once...
+rem Install dependencies when they are missing or an update changed them.
+set "NEED_INSTALL="
+if not exist "%~dp0node_modules\vite\package.json" set "NEED_INSTALL=1"
+if exist "%~dp0.meiyuren\needs-install" set "NEED_INSTALL=1"
+if defined NEED_INSTALL (
+  echo [Meiyuren] Installing dependencies...
   where npm.cmd >nul 2>nul
   if errorlevel 1 goto npm_missing
   call npm.cmd install --no-audit --no-fund
   if errorlevel 1 goto install_error
+  if exist "%~dp0.meiyuren\needs-install" del /q "%~dp0.meiyuren\needs-install"
 )
 
 echo [Meiyuren] Starting...

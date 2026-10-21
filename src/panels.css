@@ -1,0 +1,46 @@
+/* Все панели меню открываются в одном месте: справа от боковой навигации,
+   не перекрывая её, с прокруткой внутри панели. Одновременно видна только одна. */
+.chat-panel,
+.settings-panel,
+.updater-panel,
+.cloud-settings {
+  position: fixed;
+  z-index: 65;
+  top: 14px;
+  right: auto;
+  bottom: auto;
+  left: 98px;
+  transform: none;
+  width: min(420px, calc(100vw - 112px));
+  max-height: calc(100svh - 28px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 22px;
+  animation: panel-in .18s ease-out;
+}
+.chat-panel { bottom: 14px; height: auto; }
+.settings-panel > header,
+.updater-panel > header,
+.cloud-settings > header { flex: none; }
+.settings-panel__body,
+.updater-panel__body,
+.cloud-settings__body { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; scrollbar-color: #6b5530 transparent; }
+.settings-panel__memory { margin-top: 22px; }
+.stage { min-height: 100svh; }
+
+@keyframes panel-in { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 600px) {
+  .chat-panel,
+  .settings-panel,
+  .updater-panel,
+  .cloud-settings { left: 64px; top: 8px; width: calc(100vw - 72px); max-height: calc(100svh - 16px); }
+  .chat-panel { bottom: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel, .settings-panel, .updater-panel, .cloud-settings { animation: none; }
+}
+.chat-v06__tools button, .chat-v06__search button { min-width: 34px; height: 34px; padding: 0 10px; font-size: 12px; line-height: 1; }
+.chat-v06__tools select, .chat-v06__search input { height: 34px; font-size: 12px; }
+.updater-panel__version-grid strong { font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; }

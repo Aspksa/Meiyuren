@@ -16,3 +16,4 @@ import './cloud-audit.css';
 import './chat-v06.css';
 
 import './memory-core.css';
+import './panels.css';

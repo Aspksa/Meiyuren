@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react';
 import { MemoryEditor } from './MemoryEditor';
 import { AVATARS, avatarUrl } from '../lib/avatars';
 import { OPACITY_MAX, OPACITY_MIN, SIZE_MAX, SIZE_MIN, useAppStore } from '../store/useAppStore';
 
 export function SettingsPanel() {
   const open = useAppStore((s) => s.settingsOpen);
-  const anchor = useAppStore((s) => s.settingsAnchor);
   const close = useAppStore((s) => s.closeSettings);
   const size = useAppStore((s) => s.size);
   const setSize = useAppStore((s) => s.setSize);
@@ -16,34 +14,19 @@ export function SettingsPanel() {
   const resetPosition = useAppStore((s) => s.resetPosition);
   const avatarId = useAppStore((s) => s.avatarId);
   const setAvatarId = useAppStore((s) => s.setAvatarId);
-  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-
-  useEffect(() => {
-    if (!open) return;
-    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
-    onResize();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, [open]);
-
   if (!open) return null;
-  const width = Math.min(320, viewport.width - 24);
-  const left = Math.max(12, Math.min(anchor.x, viewport.width - width - 12));
-  const top = Math.max(12, Math.min(anchor.y, viewport.height - Math.min(560, viewport.height - 24) - 12));
 
   return (
-    <aside className="settings-panel" role="dialog" aria-label="Настройки аватара" style={{ left, top, width }}>
+    <aside className="settings-panel" role="dialog" aria-label="Настройки аватара">
       <header className="panel-header">
         <span className="panel-header__mark">⚙</span>
         <div>
           <strong>Настройки</strong>
-          <span className="panel-header__sub">Персонализация аватара</span>
+          <span className="panel-header__sub">Аватар и память</span>
         </div>
         <button type="button" onClick={close} className="icon-button panel-header__close" aria-label="Закрыть настройки">×</button>
       </header>
       <div className="settings-panel__body">
-        <details className="setting-advanced">
-          <summary>Внешний вид аватара · дополнительные настройки</summary>
         <fieldset className="setting avatar-picker">
           <legend className="setting__heading"><span>Образ</span><output>{AVATARS.find((item) => item.id === avatarId)?.label}</output></legend>
           <div className="avatar-picker__grid" role="radiogroup" aria-label="Выбор аватара">
@@ -78,8 +61,10 @@ export function SettingsPanel() {
         <div className="setting-actions">
           <button type="button" onClick={() => { resetPosition(); close(); }}>Сбросить позицию</button>
         </div>
+        <details className="setting-advanced settings-panel__memory">
+          <summary>Память Мэйюрэн</summary>
+          <MemoryEditor active={open} />
         </details>
-        <MemoryEditor active={open} />
         <p className="settings-panel__hint">Настройки и положение сохраняются в браузере, история и заметки — локально в SQLite.</p>
       </div>
     </aside>

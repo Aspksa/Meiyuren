@@ -21,11 +21,14 @@ function SidebarButton({ label, active = false, onClick, children }: { label: st
   return <button type="button" aria-label={label} aria-pressed={active} title={label} className={`side-nav__button${active ? ' side-nav__button--active' : ''}`} onClick={onClick}>{children}</button>;
 }
 
-export function IconSidebar({ onChat, onSettings, onUpdates, onCloud, updatesOpen, cloudOpen }: {
+export function IconSidebar({ onHome, onChat, onSettings, onUpdates, onCloud, chatOpen, settingsOpen, updatesOpen, cloudOpen }: {
+  onHome: () => void;
   onChat: () => void;
   onSettings: () => void;
   onUpdates: () => void;
   onCloud: () => void;
+  chatOpen: boolean;
+  settingsOpen: boolean;
   updatesOpen: boolean;
   cloudOpen: boolean;
 }) {
@@ -33,13 +36,13 @@ export function IconSidebar({ onChat, onSettings, onUpdates, onCloud, updatesOpe
     <nav className="side-nav" aria-label="Главное меню">
       <div className="side-nav__logo" title="Meiyuren" aria-hidden="true">✿</div>
       <span className="side-nav__line" aria-hidden="true" />
-      <SidebarButton label="Главная" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}><Icon name="home" /></SidebarButton>
-      <SidebarButton label="Чат" onClick={onChat}><Icon name="chat" /></SidebarButton>
+      <SidebarButton label="Главная" onClick={onHome}><Icon name="home" /></SidebarButton>
+      <SidebarButton label="Чат" active={chatOpen} onClick={onChat}><Icon name="chat" /></SidebarButton>
       <SidebarButton label="Обновления" active={updatesOpen} onClick={onUpdates}>
         <img className="side-nav__update" src={`${import.meta.env.BASE_URL}assets/icons/update.svg`} alt="" aria-hidden="true" />
       </SidebarButton>
       <SidebarButton label="Cloud.ru" active={cloudOpen} onClick={onCloud}><CloudSymbol /></SidebarButton>
-      <SidebarButton label="Настройки" onClick={onSettings}><Icon name="settings" /></SidebarButton>
+      <SidebarButton label="Настройки" active={settingsOpen} onClick={onSettings}><Icon name="settings" /></SidebarButton>
       <span className="side-nav__spacer" aria-hidden="true" />
       <a className="side-nav__button" href="https://github.com/Aspksa/Meiyuren" target="_blank" rel="noopener noreferrer" aria-label="Репозиторий GitHub" title="Репозиторий GitHub"><Icon name="github" /></a>
     </nav>

@@ -1,7 +1,7 @@
 {
   "name": "meiyuren",
   "private": true,
-  "version": "0.21.0",
+  "version": "0.21.1",
   "type": "module",
   "scripts": {
     "dev": "node scripts/start.mjs",
@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run src",
-    "test:launcher": "node --test scripts/ports.test.mjs scripts/updater-policy.test.mjs scripts/vite-updates.test.mjs",
+    "test:launcher": "node --test scripts/ports.test.mjs scripts/updater-policy.test.mjs scripts/updater-archive.test.mjs scripts/vite-updates.test.mjs",
     "test:backend": "python -m pytest backend/tests -q"
   },
   "dependencies": {
