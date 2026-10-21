@@ -337,6 +337,9 @@ class MemoryEngine:
                         "ORDER BY updated_at DESC LIMIT 300"
                     ).fetchall():
                         self._link_local(conn,item["id"],item["content"])
+        # Подключаем старые подтверждённые факты к дереву при первом запуске v0.11.
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
@@ -1311,5 +1314,7 @@ class MemoryEngine:
             candidates=conn.execute("SELECT COUNT(*) FROM memory_candidates WHERE status='pending'").fetchone()[0]
             queued=conn.execute("SELECT COUNT(*) FROM memory_jobs WHERE state IN ('pending','running')").fetchone()[0]
             summaries=conn.execute("SELECT COUNT(*) FROM memory_summaries WHERE status='draft'").fetchone()[0]
+        with closing(db.connection(self.path)) as conn:
+            branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
-                    policy=self.policy(),network=self.brains())
+                    policy=self.policy(),network=self.brains(),autonomousBranches=branches)
