@@ -422,6 +422,7 @@ class MemoryEngine:
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        self.rebuild_deep_index()
         return self._item(row)
 
     def edit(self, item_id: str, *, content: str, cloud_allowed: bool, revision: int,
@@ -457,6 +458,7 @@ class MemoryEngine:
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        self.rebuild_deep_index()
         return self._item(row)
 
     def forget(self, item_id: str) -> bool:
@@ -505,6 +507,7 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_summaries")
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        self.rebuild_deep_index()
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -580,6 +583,7 @@ class MemoryEngine:
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        self.rebuild_deep_index()
         return dict(approved=True,item=self._item(item))
 
     def observe(self,exchange: dict,conversation_id: str) -> None:
@@ -757,6 +761,7 @@ class MemoryEngine:
                 changed=True
         if changed:
             self.grow_branches()
+            self.rebuild_deep_index()
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -858,6 +863,7 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_jobs WHERE conversation_id=?",(conversation_id,))
         if self.policy()["auto_growth"]:
             self.grow_branches()
+        self.rebuild_deep_index()
 
     def recall(self, query: str, conversation_id: str, cloud_mode: bool) -> list[dict]:
         """Ранжированный лексический поиск, с безопасным русским префиксным стеммингом."""
@@ -939,7 +945,7 @@ class MemoryEngine:
 
     def preview(self, query: str, conversation_id: str, cloud_mode: bool) -> dict:
         """Показываем решения компилятора без модификации журнала использования."""
-        selected=self.recall(query,conversation_id,cloud_mode)
+        selected=self.deep_recall(query,conversation_id,cloud_mode)
         return {"memories":selected,"context":self._compose(query,conversation_id,cloud_mode,selected)}
 
     def _compose(self, query: str, conversation_id: str, cloud_mode: bool,
@@ -975,8 +981,9 @@ class MemoryEngine:
 
     def prepare(self, query: str, conversation_id: str, cloud_mode: bool) -> str:
         """Компилятор контекста фиксирует ID выбранных, но не отправляет AI-вызов."""
-        selected=self.recall(query,conversation_id,cloud_mode)
+        selected=self.deep_recall(query,conversation_id,cloud_mode)
         context=self._compose(query,conversation_id,cloud_mode,selected)
+        self._observe_recall_quality(query,selected)
         if selected:
             with closing(db.connection(self.path)) as conn:
                 with conn:
@@ -1046,6 +1053,7 @@ class MemoryEngine:
                     "(SELECT id FROM conversations)"
                 )
         self.grow_branches()
+        self.rebuild_deep_index()
         return True
 
     def grow_branches(self) -> dict:
@@ -1675,4 +1683,5 @@ class MemoryEngine:
         with closing(db.connection(self.path)) as conn:
             branches=conn.execute("SELECT COUNT(*) FROM memory_branches WHERE depth>0").fetchone()[0]
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
-                    policy=self.policy(),network=self.brains(),autonomousBranches=branches)
+                    policy=self.policy(),network=self.brains(),autonomousBranches=branches,
+                    deep=self.deep_metrics())
