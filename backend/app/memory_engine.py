@@ -2298,6 +2298,31 @@ class MemoryEngine:
             left_id, right_id, helpful, eligible=set(cortex.nodes))
         return {"adjustment": adjustment, "helpful": helpful}
 
+    def infinity_overview(self, conversation_id: str, cloud_mode: bool=False) -> dict:
+        """On-demand, visibility-filtered, bounded growth proposal; no mutations."""
+        from .infinity_growth import Evidence, InfinityGrowth
+        rows = self._visible_deep_rows(conversation_id, cloud_mode)
+        evidence = [
+            Evidence(id=r["id"], brain=r["brain"], text=r["content"],
+                     source=r["sourceMessageId"], scope=conversation_id)
+            for r in rows[:50000] if r.get("sourceMessageId")
+        ]
+        planner = InfinityGrowth(evidence)
+        roots = planner.grow()
+        for root in roots[:8]:
+            planner.specialize(root.id)
+        return {
+            **planner.metrics(),
+            "subbrains": [
+                {"id":x.id,"parent":x.parent,"topic":x.topic,
+                 "depth":x.depth,"evidenceCount":len(x.evidence_ids)}
+                for x in planner.subbrains.values()
+            ],
+            "questions": planner.questions(),
+            "localShardCounts": {str(k):len(v) for k,v in planner.distribute(8).items()},
+            "mode":"read_only_proposal",
+        }
+
     def deep_overview(self,conversation_id: str,cloud_mode: bool=False) -> dict:
         """Хронология, состояния проектов и уровни деталей, всегда из живых записей."""
         rows=self._visible_deep_rows(conversation_id,cloud_mode)
