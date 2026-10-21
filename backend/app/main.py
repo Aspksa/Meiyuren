@@ -19,6 +19,7 @@ from .memory_engine import MemoryEngine, SECRET
 from .evolution_runtime import EvolutionRuntime
 from .neural_operations import NeuralOperations
 from .replies import generate_reply
+from .brain_diagnostics import is_diagnostic_request, diagnostic_report
 
 
 class ChatInput(BaseModel):
@@ -236,6 +237,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         require_conversation(body.conversationId)
         expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
+        if is_diagnostic_request(text):
+            reply = diagnostic_report(engine.status())
+            return observed(history.append_exchange(
+                database, text, reply, body.conversationId, expected_epoch), body.conversationId)
         notes = memory_context(text, body.conversationId, settings["enabled"])
         if settings["enabled"]:
             if not body.requestId:
@@ -278,7 +283,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         require_conversation(body.conversationId)
         expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
-        if settings["enabled"] and not body.requestId:
+        is_brain_diagnostic = is_diagnostic_request(text)
+        if settings["enabled"] and not body.requestId and not is_brain_diagnostic:
             raise HTTPException(422, detail="Для Cloud.ru требуется идентификатор запроса.")
 
         def event(name, data):
@@ -289,6 +295,13 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             reserved = False
             completed = False
             try:
+                if is_brain_diagnostic:
+                    reply = diagnostic_report(engine.status())
+                    result = observed(history.append_exchange(
+                        database, text, reply, body.conversationId, expected_epoch), body.conversationId)
+                    yield event("delta", {"text": reply})
+                    yield event("done", result)
+                    return
                 if not settings["enabled"]:
                     result = observed(history.append_exchange(
                         database, text, generate_reply(text, memory_context(text, body.conversationId, False)),
