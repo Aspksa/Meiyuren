@@ -466,6 +466,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(422,detail=str(exc)) from None
 
+    @app.get("/api/memory/infinity/overview")
+    def infinity_growth_overview(
+        conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.infinity_overview(conversationId,cloudMode)
+
     @app.get("/api/memory/deep/overview")
     def deep_memory_overview(
         conversationId: str = Query(default="main",max_length=40),
