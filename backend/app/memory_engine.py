@@ -259,6 +259,8 @@ class MemoryEngine:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN allow_cloud_embeddings INTEGER NOT NULL DEFAULT 0")
                 if "auto_growth" not in policy_columns:
                     conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_growth INTEGER NOT NULL DEFAULT 1")
+                if "auto_evolution" not in policy_columns:
+                    conn.execute("ALTER TABLE memory_policy ADD COLUMN auto_evolution INTEGER NOT NULL DEFAULT 1")
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_branches (
                     id TEXT PRIMARY KEY,
                     parent_id TEXT,
@@ -279,6 +281,34 @@ class MemoryEngine:
                     id INTEGER PRIMARY KEY CHECK(id=1), last_run INTEGER NOT NULL DEFAULT 0
                 )""")
                 conn.execute("INSERT OR IGNORE INTO memory_growth_maintenance(id) VALUES(1)")
+                # Local neuroevolution: resource-bounded generations, no model/code mutation.
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_evolution_state (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    generation INTEGER NOT NULL DEFAULT 0,
+                    active_strategy TEXT NOT NULL DEFAULT 'balanced',
+                    last_evaluated INTEGER NOT NULL DEFAULT 0,
+                    evaluations INTEGER NOT NULL DEFAULT 0
+                )""")
+                conn.execute("INSERT OR IGNORE INTO memory_evolution_state(id) VALUES(1)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_evolution_trials (
+                    generation INTEGER NOT NULL, strategy TEXT NOT NULL,
+                    benchmark_cases INTEGER NOT NULL, proxy_score REAL NOT NULL,
+                    selected INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                    PRIMARY KEY(generation,strategy)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_microbrains (
+                    id TEXT PRIMARY KEY, root_brain TEXT NOT NULL, branch_id TEXT NOT NULL,
+                    support INTEGER NOT NULL, created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_microbrain_branch ON memory_microbrains(branch_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_synaptic_weights (
+                    left_id TEXT NOT NULL, right_id TEXT NOT NULL,
+                    adjustment REAL NOT NULL DEFAULT 0,
+                    observations INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(left_id,right_id)
+                )""")
                 # Deep Memory v0.12: event state and bounded, content-free retrieval feedback.
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_deep_events (
                     memory_id TEXT PRIMARY KEY, brain TEXT NOT NULL,
@@ -390,10 +420,10 @@ class MemoryEngine:
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             row=conn.execute("SELECT * FROM memory_policy WHERE id=1").fetchone()
-        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth")}
+        return {k:bool(row[k]) for k in ("allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution")}
 
     def set_policy(self, updates: dict) -> dict:
-        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth"}
+        allowed={"allow_cloud_notes","allow_cloud_facts","auto_extract","auto_summaries","allow_cloud_embeddings","auto_growth","auto_evolution"}
         if not updates or any(k not in allowed or not isinstance(v,bool) for k,v in updates.items()):
             raise ValueError("Некорректная политика памяти.")
         with closing(db.connection(self.path)) as conn:
