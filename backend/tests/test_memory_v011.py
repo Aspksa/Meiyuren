@@ -180,3 +180,42 @@ def test_branch_data_cleared_when_conversation_erased(app):
     assert not any(x["depth"]>0 for x in client.get("/api/memory/tree").json()["branches"])
     with closing(db.connection(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM memory_branch_members").fetchone()[0]==0
+
+
+
+def test_safe_local_summaries_are_approved_without_interruption(app):
+    client,_=app
+    say(client,"Я изучаю Python")
+    for i in range(5):
+        say(client,"Простая реплика "+str(i))
+    summaries=client.get("/api/memory/summaries").json()["summaries"]
+    assert len(summaries)==1
+    assert summaries[0]["status"]=="approved"
+    assert summaries[0]["cloudAllowed"] is False
+    assert "Python" in summaries[0]["content"]
+
+
+def test_maintenance_prunes_expired_topic_branches(app):
+    client,path=app
+    first=manual(client,"Изучаю Kotlin инструменты","knowledge")
+    manual(client,"Изучаю Kotlin документацию","knowledge")
+    assert any(x["term"]=="kotlin" for x in client.get("/api/memory/tree").json()["branches"])
+    client.put("/api/memory/facts/"+first["id"],json={
+        "content":first["content"],"cloudAllowed":False,
+        "revision":first["revision"],"expiresAt":1000,
+    })
+    with closing(db.connection(path)) as conn:
+        with conn:
+            conn.execute("UPDATE memory_growth_maintenance SET last_run=0 WHERE id=1")
+    client.post("/api/memory/process")
+    assert not any(x["term"]=="kotlin" for x in client.get("/api/memory/tree").json()["branches"])
+
+
+def test_topic_based_recall_still_respects_cloud_permissions(app):
+    client,path=app
+    first=manual(client,"Изучаю Python в проекте Rust","knowledge")
+    manual(client,"Изучаю Python в проекте Scala","knowledge")
+    engine=MemoryEngine(path)
+    local=engine.recall("Объясни тему Python","main",False)
+    assert any(x["id"]==first["id"] for x in local)
+    assert engine.recall("Объясни тему Python","main",True)==[]
