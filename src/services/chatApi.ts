@@ -121,6 +121,12 @@ export async function getMemoryUsage(): Promise<MemoryUsage[]> {
   )).entries;
 }
 
+export async function rebuildMemoryBrainLinks(): Promise<number> {
+  return (await parse<{ links: number }>(await fetch('/api/memory/brains/rebuild', {
+    method: 'POST', headers,
+  }))).links;
+}
+
 export async function getMemoryBrains(): Promise<MemoryNetwork> {
   return parse(await fetch('/api/memory/brains', { cache: 'no-store' }));
 }
