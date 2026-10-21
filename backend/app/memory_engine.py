@@ -390,6 +390,8 @@ class MemoryEngine:
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
                 self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return self._item(row)
 
     def edit(self, item_id: str, *, content: str, cloud_allowed: bool, revision: int,
@@ -423,6 +425,8 @@ class MemoryEngine:
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
                 self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return self._item(row)
 
     def forget(self, item_id: str) -> bool:
@@ -469,6 +473,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_items WHERE id=?",(target,))
                 # Связанная с историей память могла попасть в любую выписку.
                 conn.execute("DELETE FROM memory_summaries")
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -542,6 +548,8 @@ class MemoryEngine:
                             conn.execute("DELETE FROM memory_summaries")
                 conn.execute("UPDATE memory_candidates SET status='approved' WHERE id=?",(candidate_id,))
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         return dict(approved=True,item=self._item(item))
 
     def observe(self,exchange: dict,conversation_id: str) -> None:
@@ -752,6 +760,8 @@ class MemoryEngine:
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_jobs WHERE conversation_id=?",(conversation_id,))
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
 
     def recall(self, query: str, conversation_id: str, cloud_mode: bool) -> list[dict]:
         """Ранжированный лексический поиск, с безопасным русским префиксным стеммингом."""
@@ -887,6 +897,121 @@ class MemoryEngine:
 
     # Five-brain association graph: shared topics and true neural similarities.
     # All references resolve to confirmed records, never to AI guesses.
+    def grow_branches(self) -> dict:
+        """Полностью локальное саморазвитие дерева памяти по повторяющимся темам.
+
+        Восемь исходных мозгов — стабильные корни. Темы без заранее заданного списка
+        образуют вложенные ветви из >=2 РАЗНЫХ подтверждённых воспоминаний.
+        Пересборка в одной SQLite-транзакции не оставляет удалённые сведения
+        в производных ветвях. Максимальная работа ограничена фиксированным окном.
+        """
+        stamp = now()
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                rows = conn.execute(
+                    "SELECT id,content,brain FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (stamp,BRANCH_SCAN_LIMIT)
+                ).fetchall()
+                # Ветка/запись привязана к существующему подтверждённому факту.
+                datasets = {brain: {} for brain in BRAINS}
+                titles = {}
+                for row in rows:
+                    if row["brain"] not in datasets or SECRET.search(row["content"]):
+                        continue
+                    terms = _keywords(row["content"])
+                    if not terms:
+                        continue
+                    datasets[row["brain"]][row["id"]] = terms
+                    for raw in TOKENS.findall(row["content"]):
+                        term = search_stem(raw.casefold())
+                        if term in terms and term not in titles:
+                            titles[term] = raw[:42]
+                conn.execute("DELETE FROM memory_branch_members")
+                conn.execute("DELETE FROM memory_branches WHERE depth>0")
+                for brain in BRAINS:
+                    conn.execute(
+                        "UPDATE memory_branches SET support=?,updated_at=? WHERE id=?",
+                        (len(datasets[brain]),stamp,brain)
+                    )
+                    if datasets[brain]:
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO memory_branch_members VALUES(?,?)",
+                            [(brain,memory_id) for memory_id in datasets[brain]]
+                        )
+                nodes_created = 0
+                # LIMIT ограничивает нагрузку при длительном использовании.
+                node_cap = 320
+
+                def expand(root: str, parent_id: str, doc_ids: set[str],
+                           used: frozenset[str], depth: int) -> None:
+                    nonlocal nodes_created
+                    if depth>MAX_BRANCH_DEPTH or nodes_created>=node_cap or len(doc_ids)<2:
+                        return
+                    counts: dict[str, set[str]] = {}
+                    for memory_id in doc_ids:
+                        for term in datasets[root][memory_id]:
+                            if term not in used and len(term)>=4:
+                                counts.setdefault(term,set()).add(memory_id)
+                    options = [
+                        (term,members) for term,members in counts.items()
+                        if len(members)>=2 and (depth==1 or len(members)<len(doc_ids))
+                    ]
+                    options.sort(key=lambda x:(-len(x[1]), x[0]))
+                    for term,members in options[:MAX_BRANCH_CHILDREN]:
+                        if nodes_created>=node_cap:
+                            break
+                        node_id = str(uuid.uuid5(
+                            uuid.NAMESPACE_URL, "meiyuren:memory-branch:"+parent_id+":"+term
+                        ))
+                        conn.execute(
+                            "INSERT INTO memory_branches "
+                            "(id,parent_id,root_brain,term,title,depth,support,updated_at) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            (node_id,parent_id,root,term,titles.get(term,term),depth,len(members),stamp)
+                        )
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO memory_branch_members VALUES(?,?)",
+                            [(node_id,memory_id) for memory_id in members]
+                        )
+                        nodes_created+=1
+                        expand(root,node_id,members,used | {term},depth+1)
+
+                for brain in BRAINS:
+                    expand(brain,brain,set(datasets[brain]),frozenset(),1)
+        return {"branches":nodes_created,"roots":len(BRAINS),"scanned":len(rows)}
+
+    def branch_tree(self) -> dict:
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT id,parent_id,root_brain,term,title,depth,support "
+                "FROM memory_branches ORDER BY root_brain,depth,title,id LIMIT 400"
+            ).fetchall()
+        return {"roots":list(BRAINS),"branches":[
+            dict(id=r["id"],parentId=r["parent_id"],brain=r["root_brain"],
+                 term=r["term"],title=r["title"],depth=r["depth"],support=r["support"])
+            for r in rows
+        ]}
+
+    def branch_facts(self,branch_id: str,conversation_id: str,cloud_mode: bool=False) -> list[dict]:
+        policy=self.policy()
+        if cloud_mode and not policy["allow_cloud_facts"]:
+            return []
+        with closing(db.connection(self.path)) as conn:
+            rows=conn.execute(
+                "SELECT m.* FROM memory_branch_members bm "
+                "JOIN memory_items m ON m.id=bm.memory_id "
+                "WHERE bm.branch_id=? AND m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "AND (m.conversation_id='global' OR m.conversation_id=?) "
+                "ORDER BY m.updated_at DESC LIMIT 100",
+                (branch_id,now(),conversation_id)
+            ).fetchall()
+        return [self._item(row) for row in rows
+                if not SECRET.search(row["content"])
+                and (not cloud_mode or bool(row["cloud_allowed"]))]
+
     def _link_local(self, conn: sqlite3.Connection, item_id: str, content: str) -> None:
         source=_keywords(content)
         if not source:
