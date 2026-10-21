@@ -10,3 +10,8 @@
 .memory-core__tree-brain>small{color:#bca17c;font-size:11px}
 .memory-core__tree-node{display:flex;gap:8px;justify-content:space-between;align-items:center;font-size:11px;line-height:1.7;overflow-wrap:anywhere}
 .memory-core__tree-node small{font-variant-numeric:tabular-nums;color:#bca17c}
+
+.memory-core__explanation details{margin:7px 0;padding:6px;border:1px solid #d2aa723d;border-radius:7px}
+.memory-core__explanation summary{cursor:pointer;color:#e9cea8;font-size:11px}
+.memory-core__explanation strong{font-size:12px}
+.memory-core__explanation li{font-size:11px}
