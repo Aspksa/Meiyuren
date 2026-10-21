@@ -1036,6 +1036,9 @@ class MemoryEngine:
         stamp = now()
         with closing(db.connection(self.path)) as conn:
             with conn:
+                # Берём write lock ДО чтения списка фактов. Иначе фоновый worker
+                # способен перезаписать дерево устаревшим снимком после нового факта.
+                conn.execute("BEGIN IMMEDIATE")
                 rows = conn.execute(
                     "SELECT id,content,brain FROM memory_items WHERE status='confirmed' "
                     "AND (expires_at IS NULL OR expires_at>?) "
