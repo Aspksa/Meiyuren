@@ -42,9 +42,8 @@ class AdaptiveBrain:
         if len(self.current.experts)>=MAX_EXPERTS:
             raise ValueError("Expert budget exceeded")
         parents={x.id:x for x in self.current.experts}
-        if parent not in parents and parent not in ("knowledge","projects","goals",
-                                                    "decisions","preferences","people",
-                                                    "events","context"):
+        if parent not in parents and parent not in ("identity","episodes","goals","habits",
+                                                    "knowledge","relationships","projects","decisions"):
             raise ValueError("Unknown parent")
         depth=parents[parent].depth+1 if parent in parents else 1
         if depth>MAX_DEPTH:raise ValueError("Maximum expert depth")
