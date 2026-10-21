@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { avatarUrl } from '../lib/avatars';
-import { startingPosition } from '../lib/position';
 import {
   createConversation, deleteConversation, getConversations, loadHistory,
   renameConversation, searchChat, streamMessage,
@@ -14,8 +13,6 @@ export function ChatPanel() {
   const messages = useAppStore(s => s.messages);
   const setMessages = useAppStore(s => s.setMessages);
   const greeting = useAppStore(s => s.greetingEnabled);
-  const position = useAppStore(s => s.position);
-  const size = useAppStore(s => s.size);
   const avatarId = useAppStore(s => s.avatarId);
   const [conversationId, setConversationId] = useState('main');
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -62,8 +59,6 @@ export function ChatPanel() {
   useEffect(() => () => controller.current?.abort(), []);
 
   if (!open) return null;
-  const avatarX = (position ?? startingPosition(size, window.innerWidth, window.innerHeight)).x;
-  const side = avatarX + size / 2 > window.innerWidth / 2 ? 'left' : 'right';
 
   function switchConversation(id: string) {
     controller.current?.abort();
@@ -161,7 +156,7 @@ export function ChatPanel() {
   }
 
   return (
-    <section className={`chat-panel chat-panel--${side}`} role="dialog" aria-label="Чат с Мэйюрэн">
+    <section className="chat-panel" role="dialog" aria-label="Чат с Мэйюрэн">
       <header className="panel-header">
         <span className="panel-header__mark"><img className="panel-header__portrait" src={avatarUrl(avatarId)} alt="" /></span>
         <div><strong>Мэйюрэн</strong><span className="panel-header__sub">Cloud.ru · диалоги и память</span></div>

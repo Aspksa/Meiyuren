@@ -96,7 +96,7 @@ export const useAppStore = create<AppState>()(
       },
       openChat: () => set({ chatOpen: true, settingsOpen: false }),
       closeChat: () => set({ chatOpen: false }),
-      openSettings: (settingsAnchor) => set({ settingsOpen: true, settingsAnchor }),
+      openSettings: (settingsAnchor) => set({ settingsOpen: true, chatOpen: false, settingsAnchor }),
       closeSettings: () => set({ settingsOpen: false }),
       resetPosition: () => set({ position: null }),
       addMessage: (role, text) => {

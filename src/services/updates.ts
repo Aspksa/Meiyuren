@@ -1,6 +1,9 @@
 export type UpdateStatus = {
+  mode: 'git' | 'archive';
   installedSha: string | null;
+  installedVersion: string | null;
   remoteSha: string | null;
+  remoteVersion: string | null;
   hasUpdate: boolean;
   canApply: boolean;
   ci: 'success' | 'failed' | 'pending' | 'missing' | 'unknown';

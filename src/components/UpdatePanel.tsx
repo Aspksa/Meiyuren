@@ -52,7 +52,8 @@ export function UpdatePanel({ open, onClose }: { open: boolean; onClose: () => v
     }
   }
 
-  const short = (sha: string | null | undefined) => sha ? sha.slice(0, 8) : '—';
+  const describe = (version: string | null | undefined, sha: string | null | undefined) =>
+    [version ? `v${version}` : '', sha ? sha.slice(0, 7) : ''].filter(Boolean).join(' · ') || '—';
   const ciLabel = {
     success: 'Пройдены',
     failed: 'Не пройдены',
@@ -69,10 +70,9 @@ export function UpdatePanel({ open, onClose }: { open: boolean; onClose: () => v
         <button type="button" className="updater-panel__close" aria-label="Закрыть обновления" onClick={onClose}>×</button>
       </header>
       <div className="updater-panel__body">
-        <p className="updater-panel__intro">Проверка новых версий напрямую из официального репозитория Meiyuren на GitHub.</p>
         <div className="updater-panel__version-grid">
-          <div><span>Установлено</span><strong>{short(status?.installedSha)}</strong></div>
-          <div><span>На GitHub</span><strong>{short(status?.remoteSha)}</strong></div>
+          <div><span>Установлено</span><strong>{describe(status?.installedVersion, status?.installedSha)}</strong></div>
+          <div><span>На GitHub</span><strong>{describe(status?.remoteVersion, status?.remoteSha)}</strong></div>
         </div>
         <div className="updater-panel__ci">
           <span className={`updater-panel__signal${status?.ci === 'success' ? ' updater-panel__signal--ok' : ''}`} />
@@ -85,8 +85,8 @@ export function UpdatePanel({ open, onClose }: { open: boolean; onClose: () => v
           <div className="updater-panel__confirm">
             <strong>{confirm === 'apply' ? 'Установить обновление?' : 'Вернуться к прошлой версии?'}</strong>
             <p>{confirm === 'apply'
-              ? 'Будет выполнено безопасное fast-forward обновление после успешных проверок GitHub CI. Сохраните свои несохранённые данные в браузере.'
-              : 'Будет восстановлен предыдущий коммит. Несохранённые изменения в Git блокируют откат.'}</p>
+              ? 'Будет установлена версия с GitHub, прошедшая проверки CI. История чатов и память не затрагиваются.'
+              : 'Будут возвращены файлы предыдущей версии. История чатов и память не затрагиваются.'}</p>
             <div className="updater-panel__buttons">
               <button type="button" onClick={() => setConfirm(null)} disabled={busy}>Отмена</button>
               <button type="button" className="updater-panel__primary" onClick={() => void proceed()} disabled={busy}>{busy ? 'Выполняется…' : 'Подтвердить'}</button>
@@ -102,7 +102,7 @@ export function UpdatePanel({ open, onClose }: { open: boolean; onClose: () => v
         )}
         <div className="updater-panel__foot">
           <a href="https://github.com/Aspksa/Meiyuren" target="_blank" rel="noopener noreferrer">Исходный код на GitHub ↗</a>
-          <p>Автоматическая установка доступна только для чистой Git-копии в ветке main с успешной CI. После обновления перезапустите приложение. Если изменились зависимости, выполните <code>npm install</code>.</p>
+          <p>Работает и для копии из ZIP-архива, и для Git-копии. Устанавливается только версия с успешными проверками CI. После обновления перезапустите Meiyuren.cmd.</p>
         </div>
       </div>
     </section>
