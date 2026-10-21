@@ -61,6 +61,11 @@ class MemoryReviewInput(BaseModel):
     cloudAllowed: bool = False
 
 
+class MemoryFeedbackInput(BaseModel):
+    helpful: bool
+
+
+
 class MemoryNeuralIndexInput(BaseModel):
     itemId: str = Field(min_length=1, max_length=40)
     requestId: str = Field(min_length=36, max_length=36)
@@ -124,7 +129,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.11.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.12.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -390,6 +395,29 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not changed:
             raise HTTPException(404,detail="Выписка не найдена.")
         return {"success": True}
+
+    @app.get("/api/memory/deep/overview")
+    def deep_memory_overview(
+        conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.deep_overview(conversationId,cloudMode)
+
+    @app.get("/api/memory/deep/metrics")
+    def deep_memory_metrics():
+        return engine.deep_metrics()
+
+    @app.post("/api/memory/deep/rebuild")
+    def rebuild_deep_memory():
+        return engine.rebuild_deep_index()
+
+    @app.post("/api/memory/deep/facts/{fact_id}/feedback")
+    def deep_memory_feedback(fact_id: str,body: MemoryFeedbackInput):
+        try:
+            return engine.record_feedback(fact_id,body.helpful)
+        except ValueError as exc:
+            raise HTTPException(404,detail=str(exc)) from None
 
     @app.get("/api/memory/recall")
     def preview_memory_recall(
