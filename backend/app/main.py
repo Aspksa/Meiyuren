@@ -485,6 +485,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         require_conversation(conversationId)
         return engine.adaptive_brain_overview(conversationId,cloudMode)
 
+    @app.get("/api/memory/omega/overview")
+    def omega_overview(
+        conversationId: str = Query(default="main",max_length=40),
+        cloudMode: bool = False,
+    ):
+        require_conversation(conversationId)
+        return engine.omega_overview(conversationId,cloudMode)
+
     @app.get("/api/memory/infinity/overview")
     def infinity_growth_overview(
         conversationId: str = Query(default="main",max_length=40),
