@@ -8,12 +8,13 @@ import {
   rebuildMemoryBrainLinks, getMemoryTree, getDeepMemoryOverview, getDeepMemoryMetrics,
   rebuildDeepMemoryIndex, sendDeepMemoryFeedback,
   getEpisodicMemoryOverview, rebuildEpisodicMemory,
-  resetMemoryEvolution, evaluateMemoryEvolution,
+  resetMemoryEvolution, evaluateMemoryEvolution, getCortexMesh, evaluateCortexMesh,
 } from '../services/chatApi';
 import type {
   MemoryCandidate, MemoryExplanation, MemoryFact, MemoryPolicy, MemoryRecallPreview,
   MemoryStatus, MemorySummary, MemoryUsage, MemoryBrain, MemoryConnection, MemoryNeuralMatch,
   MemoryTree, MemoryBranch, DeepMemoryOverview, DeepMemoryMetrics, EpisodicMemoryOverview,
+  CortexProvenance,
 } from '../services/chatApi';
 import { useAppStore } from '../store/useAppStore';
 
@@ -31,6 +32,7 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [summaries, setSummaries] = useState<MemorySummary[]>([]);
   const [policy, setPolicy] = useState<MemoryPolicy | null>(null);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
+  const [cortexEvidence, setCortexEvidence] = useState<CortexProvenance | null>(null);
   const [tree, setTree] = useState<MemoryTree | null>(null);
   const [deep, setDeep] = useState<DeepMemoryOverview | null>(null);
   const [episodes, setEpisodes] = useState<EpisodicMemoryOverview | null>(null);
@@ -53,11 +55,12 @@ export function MemoryEditor({ active }: { active: boolean }) {
   const [message, setMessage] = useState('');
 
   async function refresh() {
-    const [n, f, c, s, p, state, logs, branches, detailed, quality, episodic] = await Promise.all([
+    const [n, f, c, s, p, state, logs, branches, detailed, quality, episodic, cortex] = await Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
-      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(),
+      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(), getCortexMesh(),
     ]);
+    setCortexEvidence(cortex.provenance);
     setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
     setNotes(n); setFacts(f); setCandidates(c); setSummaries(s);
     setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
@@ -69,12 +72,13 @@ export function MemoryEditor({ active }: { active: boolean }) {
     void Promise.all([
       loadMemory(), getMemoryFacts(), getMemoryCandidates(),
       getMemorySummaries(), getMemoryPolicy(), getMemoryStatus(), getMemoryUsage(), getMemoryTree(),
-      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(),
-    ]).then(([n, f, c, s, p, state, logs, branches, detailed, quality, episodic]) => {
+      getDeepMemoryOverview(), getDeepMemoryMetrics(), getEpisodicMemoryOverview(), getCortexMesh(),
+    ]).then(([n, f, c, s, p, state, logs, branches, detailed, quality, episodic, cortex]) => {
       if (mounted) {
         setNotes(n); setFacts(f); setCandidates(c);
         setSummaries(s); setPolicy(p); setStatus(state); setUsage(logs); setTree(branches);
         setDeep(detailed); setDeepMetrics(quality); setEpisodes(episodic);
+        setCortexEvidence(cortex.provenance);
       }
     }).catch((cause: unknown) => {
       if (mounted) setError(cause instanceof Error ? cause.message : 'Память недоступна');
@@ -260,6 +264,8 @@ export function MemoryEditor({ active }: { active: boolean }) {
           <span>Микромозгов: {status.evolution.microbrains}</span>
           <span>Синапсов: {status.evolution.adaptiveSynapses}</span>
           <span>Эволюция: поколение {status.evolution.generation}</span>
+          <span>Межмозговых связей: {status.cortex.edges}</span>
+          <span>Связанных мозгов: {status.cortex.connectedBrains} / 8</span>
         </div>
         <h4>Восемь связанных мозгов долгосрочной памяти</h4>
         <div className="memory-core__brains">
@@ -274,6 +280,25 @@ export function MemoryEditor({ active }: { active: boolean }) {
       <details className="memory-core__advanced">
         <summary>Дополнительные настройки и ручное управление памятью</summary>
         {status && <section className="memory-core__explanation">
+          <h4>Cortex Mesh — коллективная память</h4>
+          <p>Мозги обмениваются подтверждёнными фактами через локальные
+            связи по двум и более общим признакам. Связь не доказывает причинность.</p>
+          <div className="memory-core__stats">
+            <span>Пар областей: {status.cortex.brainPairs}</span>
+            <span>Источников сообщений: {cortexEvidence?.sourceBacked ?? 0}</span>
+            <span>Без источника сообщения: {cortexEvidence?.withoutMessageSource ?? 0}</span>
+            <span>Возможных противоречий: {cortexEvidence?.potentialPreferenceConflicts ?? 0}</span>
+            <span>Контрольных случаев: {status.cortex.evaluation.cases}</span>
+            <span>Обычный поиск: {status.cortex.evaluation.baselineHits} попаданий</span>
+            <span>Сеть: {status.cortex.evaluation.meshHits} попаданий</span>
+          </div>
+          <p>Локальный тест использует поисковые запросы, извлечённые из самих
+            подтверждённых фактов. Это диагностический показатель восстановления,
+            а не точность ответов в реальных разговорах.</p>
+          <button type="button" disabled={busy} onClick={() => void action(async () => {
+            const result = await evaluateCortexMesh();
+            return 'Проверено ' + result.cases + ' контрольных примеров без Cloud.ru.';
+          })}>Повторить локальную проверку Cortex</button>
           <h4>Локальная нейроэволюция</h4>
           <p>Стратегия: {status.evolution.strategy}. Проведено проверок: {status.evolution.evaluations}.
             Оценка выполняется на локальных синтетических заданиях; это не проверка
