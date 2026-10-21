@@ -30,11 +30,16 @@ export type MemorySummary = {
 export type MemoryPolicy = {
   allow_cloud_notes: boolean; allow_cloud_facts: boolean;
   auto_extract: boolean; auto_summaries: boolean; allow_cloud_embeddings: boolean;
-  auto_growth: boolean;
+  auto_growth: boolean; auto_evolution: boolean;
+};
+export type MemoryEvolution = {
+  generation: number; strategy: string; evaluations: number; lastEvaluated: number;
+  microbrains: number; adaptiveSynapses: number; automatic: boolean;
 };
 export type MemoryStatus = {
   facts: number; pending: number; jobs: number; summaries: number;
   policy: MemoryPolicy; network: MemoryNetwork; autonomousBranches: number;
+  evolution: MemoryEvolution;
 };
 export type MemoryExplanation = {
   item: MemoryFact; source: { id: string; text: string } | null; sourceAvailable: boolean;
@@ -237,6 +242,18 @@ export async function sendDeepMemoryFeedback(
   return parse(await fetch('/api/memory/deep/facts/' + encodeURIComponent(memoryId) + '/feedback', {
     method: 'POST', headers, body: JSON.stringify({ helpful }),
   }));
+}
+
+export async function getMemoryEvolution(): Promise<MemoryEvolution> {
+  return parse(await fetch('/api/memory/evolution', { cache: 'no-store' }));
+}
+
+export async function resetMemoryEvolution(): Promise<MemoryEvolution> {
+  return parse(await fetch('/api/memory/evolution/reset', { method: 'POST', headers }));
+}
+
+export async function evaluateMemoryEvolution(): Promise<MemoryEvolution> {
+  return parse(await fetch('/api/memory/evolution/evaluate', { method: 'POST', headers }));
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {
