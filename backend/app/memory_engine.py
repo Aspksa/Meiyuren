@@ -299,6 +299,24 @@ class MemoryEngine:
                     item_ids TEXT NOT NULL, updated_at INTEGER NOT NULL,
                     PRIMARY KEY(conversation_id,brain)
                 )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_episodes (
+                    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+                    day TEXT NOT NULL, started_at INTEGER NOT NULL,
+                    ended_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                    UNIQUE(conversation_id,day)
+                )""")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_episode_members (
+                    episode_id TEXT NOT NULL, memory_id TEXT NOT NULL,
+                    PRIMARY KEY(episode_id,memory_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_episode_member ON memory_episode_members(memory_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_project_checkpoints (
+                    memory_id TEXT PRIMARY KEY, project_key TEXT NOT NULL,
+                    state TEXT NOT NULL, observed_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_project ON memory_project_checkpoints(project_key,observed_at)")
+
                 for root in BRAINS:
                     conn.execute(
                         "INSERT OR IGNORE INTO memory_branches "
