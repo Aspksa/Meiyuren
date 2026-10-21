@@ -42,6 +42,8 @@ export function SettingsPanel() {
         <button type="button" onClick={close} className="icon-button panel-header__close" aria-label="Закрыть настройки">×</button>
       </header>
       <div className="settings-panel__body">
+        <details className="setting-advanced">
+          <summary>Внешний вид аватара · дополнительные настройки</summary>
         <fieldset className="setting avatar-picker">
           <legend className="setting__heading"><span>Образ</span><output>{AVATARS.find((item) => item.id === avatarId)?.label}</output></legend>
           <div className="avatar-picker__grid" role="radiogroup" aria-label="Выбор аватара">
@@ -76,6 +78,7 @@ export function SettingsPanel() {
         <div className="setting-actions">
           <button type="button" onClick={() => { resetPosition(); close(); }}>Сбросить позицию</button>
         </div>
+        </details>
         <MemoryEditor active={open} />
         <p className="settings-panel__hint">Настройки и положение сохраняются в браузере, история и заметки — локально в SQLite.</p>
       </div>
