@@ -442,7 +442,7 @@ class MemoryEngine:
                      row["conversation_id"],int(cloud_allowed),now(),now(),row["brain"]))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,row["content"]))
                 self._link_local(conn,item_id,row["content"])
-                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)"
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                              (str(uuid.uuid4()),item_id,1,"approved",row["content"],now()))
                 if row["conflict_with"]:
                     previous=conn.execute("SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
