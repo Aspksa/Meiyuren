@@ -97,11 +97,12 @@ class AdaptiveBrain:
 
     def evaluate_and_promote(self, key: str, baseline: list[bool],
                              trial: list[bool]) -> bool:
-        from .omega import EvolutionArena
         candidate=self.proposals.get(key)
         if candidate is None:raise ValueError("Unknown candidate")
-        outcome=EvolutionArena.compare(baseline,trial,minimum_cases=8)
-        if not outcome["promote"]:return False
+        if len(baseline)!=len(trial) or len(baseline)<8:
+            return False
+        if sum(trial)<=sum(baseline) or any(a and not b for a,b in zip(baseline,trial)):
+            return False
         if candidate.revision!=self.current.revision+1:
             raise ValueError("Stale candidate")
         self.current=candidate
