@@ -13,6 +13,8 @@ export default defineConfig({
     // Только локальный Python API; модуль обновлений Vite обрабатывает сам.
     proxy: {
       '/api/chat': { target: backend, changeOrigin: false },
+      '/api/conversations': { target: backend, changeOrigin: false },
+      '/api/evolution': { target: backend, changeOrigin: false },
       '/api/memory': { target: backend, changeOrigin: false },
       '/api/cloud': { target: backend, changeOrigin: false },
       '/api/health': { target: backend, changeOrigin: false },

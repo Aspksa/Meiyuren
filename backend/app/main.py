@@ -271,7 +271,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             raise HTTPException(422, detail="Для Cloud.ru требуется идентификатор запроса.")
 
         def event(name, data):
-            return "event: " + name + "\\ndata: " + json.dumps(data, ensure_ascii=False) + "\\n\\n"
+            # Настоящие переводы строк: по пустой строке браузер отделяет SSE-события.
+            return "event: " + name + "\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n"
 
         async def stream():
             reserved = False
