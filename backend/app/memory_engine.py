@@ -1953,7 +1953,7 @@ class MemoryEngine:
                 next_frontier=[]
                 for seed in frontier[:12]:
                     neighbors=conn.execute(
-                        "SELECT CASE WHEN left_id=? THEN right_id ELSE left_id END AS neighbor,"
+                        "SELECT CASE WHEN l.left_id=? THEN l.right_id ELSE l.left_id END AS neighbor,"
                         "MAX(0,MIN(1,l.weight+COALESCE(s.adjustment,0))) AS weight "
                         "FROM memory_links l LEFT JOIN memory_synaptic_weights s "
                         "ON s.left_id=l.left_id AND s.right_id=l.right_id "
