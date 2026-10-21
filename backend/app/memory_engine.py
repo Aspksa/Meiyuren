@@ -987,6 +987,18 @@ class MemoryEngine:
                 break  # Не разрезаем утверждение на части.
             pieces.append(piece)
             remaining-=len(piece)+1
+        if self._continuation_query(query) and remaining>90:
+            checkpoint=self.episode_overview(conversation_id,cloud_mode)
+            included={item["id"] for item in selected}
+            for item in checkpoint["continuation"][:4]:
+                if item["memoryId"] in included:
+                    continue
+                piece=("Последняя контрольная точка (из подтверждённого факта): "
+                       +item["content"])
+                if SECRET.search(piece) or len(piece)+1>remaining:
+                    continue
+                pieces.append(piece)
+                remaining-=len(piece)+1
         with closing(db.connection(self.path)) as conn:
             summary=conn.execute(
                 "SELECT content,cloud_allowed FROM memory_summaries WHERE conversation_id=? AND status='approved'",
@@ -1727,6 +1739,13 @@ class MemoryEngine:
         continue_mode=self._continuation_query(query)
         lexical=self.recall(query,conversation_id,cloud_mode)
         base={row["id"] for row in lexical}
+        checkpoint_ids=set()
+        if continue_mode:
+            # A closed project must not be revived by an older "active" checkpoint.
+            checkpoint_ids={
+                point["memoryId"] for point in
+                self.episode_overview(conversation_id,cloud_mode)["continuation"]
+            }
         scored=[]
         for row in rows:
             shared=len(tokens & _keywords(row["content"]))
@@ -1734,11 +1753,11 @@ class MemoryEngine:
             if row["brain"] in routed and shared:
                 relevance+=1.25
             if continue_mode and row["brain"] in ("projects","goals","decisions"):
-                relevance+=2.2
-                if row["eventState"]=="active":
-                    relevance+=1
+                relevance+=1.1
+                if row["id"] in checkpoint_ids:
+                    relevance+=3.8
                 if row["eventState"]=="completed":
-                    relevance-=1.4
+                    relevance-=2.5
             relevance+=max(-2,min(2,row["helpful"]-row["unhelpful"]))*0.35
             if relevance<=0:
                 continue
