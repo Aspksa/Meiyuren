@@ -53,6 +53,7 @@ class MemoryPolicyInput(BaseModel):
     auto_extract: bool | None = None
     auto_summaries: bool | None = None
     allow_cloud_embeddings: bool | None = None
+    auto_growth: bool | None = None
 
 
 class MemoryReviewInput(BaseModel):
