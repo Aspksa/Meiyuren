@@ -306,6 +306,25 @@ class MemoryEngine:
                     updated_at INTEGER NOT NULL
                 )""")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_microbrain_branch ON memory_microbrains(branch_id)")
+                # v0.15: evidence-linked cross-brain cortex mesh. Only source IDs,
+                # types, counts and weights; never materialize personal text here.
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_cortex_edges (
+                    left_id TEXT NOT NULL, right_id TEXT NOT NULL,
+                    left_brain TEXT NOT NULL, right_brain TEXT NOT NULL,
+                    shared_terms INTEGER NOT NULL, strength REAL NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(left_id,right_id)
+                )""")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_cortex_right ON memory_cortex_edges(right_id)")
+                conn.execute("""CREATE TABLE IF NOT EXISTS memory_cortex_benchmarks (
+                    id INTEGER PRIMARY KEY CHECK(id=1),
+                    cases INTEGER NOT NULL DEFAULT 0,
+                    baseline_hits INTEGER NOT NULL DEFAULT 0,
+                    mesh_hits INTEGER NOT NULL DEFAULT 0,
+                    evaluated_at INTEGER NOT NULL DEFAULT 0
+                )""")
+                conn.execute("INSERT OR IGNORE INTO memory_cortex_benchmarks(id) VALUES(1)")
+
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_synaptic_weights (
                     left_id TEXT NOT NULL, right_id TEXT NOT NULL,
                     adjustment REAL NOT NULL DEFAULT 0,
@@ -1143,6 +1162,7 @@ class MemoryEngine:
         self.rebuild_deep_index()
         if self.policy()["auto_evolution"]:
             self.evolve()
+            self.evaluate_cortex()
         return True
 
     def evolution_status(self) -> dict:
@@ -1852,7 +1872,8 @@ class MemoryEngine:
                      for (conversation,brain),ids in outlines.items()]
                 )
         episode_index=self.rebuild_episodes()
-        return {"indexed":len(items),"outlines":len(outlines),**episode_index}
+        cortex_index=self.rebuild_cortex()
+        return {"indexed":len(items),"outlines":len(outlines),**episode_index,**cortex_index}
 
     def _visible_deep_rows(self,conversation_id: str,cloud_mode: bool) -> list[dict]:
         policy=self.policy()
