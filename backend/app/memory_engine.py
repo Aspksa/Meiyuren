@@ -136,6 +136,9 @@ class MemoryEngine:
                 old_revision_schema = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_revisions'"
                 ).fetchone() is not None
+                existing_graph = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_links'"
+                ).fetchone() is not None
                 conn.execute("""CREATE TABLE IF NOT EXISTS memory_items (
                     id TEXT PRIMARY KEY, content TEXT NOT NULL, fingerprint TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'fact', status TEXT NOT NULL
@@ -259,6 +262,13 @@ class MemoryEngine:
                     "WHERE m.status='confirmed' AND NOT EXISTS "
                     "(SELECT 1 FROM memory_fts f WHERE f.item_id=m.id)"
                 )
+                # Подключаем уже существующую v0.8 память к графу при первой миграции.
+                if not existing_graph:
+                    for item in conn.execute(
+                        "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                        "ORDER BY updated_at DESC LIMIT 300"
+                    ).fetchall():
+                        self._link_local(conn,item["id"],item["content"])
 
     def policy(self) -> dict:
         with closing(db.connection(self.path)) as conn:
@@ -378,6 +388,8 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
+                    conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
+                                 "WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
                     conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(target,))
                     conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(target,))
@@ -665,6 +677,9 @@ class MemoryEngine:
                     conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
                                  (item["id"],item["id"]))
                     conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item["id"],))
+                conn.execute("UPDATE memory_embedding_requests SET item_id='forgotten',content_digest='' "
+                             "WHERE item_id IN (SELECT id FROM memory_items WHERE conversation_id=?)",
+                             (conversation_id,))
                 conn.execute("DELETE FROM memory_items WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
@@ -825,6 +840,22 @@ class MemoryEngine:
             left,right=sorted((item_id,other))
             conn.execute("INSERT OR REPLACE INTO memory_links VALUES(?,?,?,?,?)",
                          (left,right,"shared_topic",round(weight,4),now()))
+
+    def rebuild_links(self) -> int:
+        """Перестроить локальные связи без нейросети и без Cloud.ru."""
+        with closing(db.connection(self.path)) as conn:
+            with conn:
+                conn.execute("DELETE FROM memory_links WHERE relation='shared_topic'")
+                items=conn.execute(
+                    "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                    "AND (expires_at IS NULL OR expires_at>?) "
+                    "ORDER BY updated_at DESC LIMIT 300",(now(),)
+                ).fetchall()
+                for item in items:
+                    self._link_local(conn,item["id"],item["content"])
+                return conn.execute(
+                    "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
+                ).fetchone()[0]
 
     def brains(self) -> dict:
         with closing(db.connection(self.path)) as conn:
