@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import './NeuralUniverse.css';
+import { NeuralSpace } from './NeuralSpace';
 
-type Graph = { nodes: {id:string;brain:string;createdAt:number}[]; edges:{source:string;target:string;relation:string;weight:number}[]; events:{kind:string;nodeId:string;action:string;timestamp:number}[]; truncated:boolean };
+type Graph = { nodes: {id:string;brain:string;createdAt:number}[]; edges:{source:string;target:string;relation:string;weight:number;updatedAt?:number}[]; events:{kind:string;nodeId:string;action:string;timestamp:number}[]; truncated:boolean };
 const BRAINS = [
   ['identity', 'Личность'], ['episodes', 'События'], ['goals', 'Цели'],
   ['habits', 'Привычки'], ['knowledge', 'Знания'], ['relationships', 'Отношения'],
@@ -21,6 +22,8 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
   const [graph, setGraph] = useState<Graph | null>(null);
   const [mode, setMode] = useState<'universe'|'synapses'|'evolution'|'activity'>('universe');
   const [selected, setSelected] = useState<BrainId>('projects');
+  const [showSpatial, setShowSpatial] = useState(true);
+  const [timePercent, setTimePercent] = useState(100);
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
@@ -43,6 +46,9 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
   }, [open]);
   if (!open) return null;
   const counts = status?.network?.brains ?? initial;
+  const earliest = graph?.nodes.reduce((v,n)=>Math.min(v,n.createdAt),Date.now()) ?? Date.now();
+  const latest = Date.now();
+  const selectedTime = earliest+(latest-earliest)*timePercent/100;
   const total = BRAINS.reduce((sum, [id]) => sum + (counts[id] || 0), 0);
   const max = Math.max(1, ...BRAINS.map(([id]) => counts[id] || 0));
   const points = BRAINS.map(([id, label], index) => ({
@@ -69,7 +75,9 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     {mode==='synapses' && <div className="neural-universe__ledger"><h3>Подтверждённые связи ({graph?.edges.length ?? 0})</h3>{graph?.edges.length ? graph.edges.slice(0,35).map((edge,index)=><p key={index}>{edge.source.slice(0,8)} ↔ {edge.target.slice(0,8)} · {edge.relation} · вес {edge.weight.toFixed(2)}</p>):<p>Подтверждённых связей пока нет.</p>}</div>}
     {mode==='evolution' && <div className="neural-universe__ledger"><h3>История изменения памяти</h3>{graph?.events.filter(e=>e.kind==='revision').length ? graph.events.filter(e=>e.kind==='revision').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · {e.action} · узел {e.nodeId.slice(0,8)}</p>):<p>История изменений пока отсутствует.</p>}</div>}
     {mode==='activity' && <div className="neural-universe__ledger"><h3>Подтверждённые обращения к памяти</h3>{graph?.events.filter(e=>e.kind==='recall').length ? graph.events.filter(e=>e.kind==='recall').slice(0,30).map((e,i)=><p key={i}>{new Date(e.timestamp).toLocaleString('ru-RU')} · извлечён узел {e.nodeId.slice(0,8)}</p>):<p>Журнал обращений пока пуст. Внутренние мысли модели не регистрируются.</p>}</div>}
-    {mode==='universe' && <div className="neural-universe__body">
+    {mode==='universe' && <div className="neural-universe__spatial-actions"><label>Исторический срез создания активных узлов: {timePercent===100?'Сейчас':new Date(selectedTime).toLocaleString('ru-RU')}<input type="range" min="0" max="100" value={timePercent} onChange={e=>setTimePercent(Number(e.target.value))}/></label><button type="button" onClick={()=>setShowSpatial(x=>!x)}>{showSpatial?'Показать восемь мозгов':'Пространственный граф'}</button></div>}
+    {mode==='universe' && showSpatial && <NeuralSpace graph={graph} at={selectedTime}/>}
+    {mode==='universe' && !showSpatial && <div className="neural-universe__body">
       <div className="neural-universe__map">
         <svg viewBox="0 0 600 490" role="img" aria-label="Восемь мозгов и количество подтверждённых фактов в каждом">
           <defs>
