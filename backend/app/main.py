@@ -60,6 +60,11 @@ class MemoryPolicyInput(BaseModel):
     auto_growth: bool | None = None
     auto_evolution: bool | None = None
     semantic_model: bool | None = None
+    curiosity: bool | None = None
+
+
+class BrainDecisionInput(BaseModel):
+    accept: bool
 
 
 class CloudBrainsInput(BaseModel):
@@ -160,7 +165,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.30.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.31.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -206,6 +211,27 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/neural/operations/consolidate")
     def neural_operations_consolidate():
         return neural_ops.tick(force=True)
+
+    @app.get("/api/memory/brains/map")
+    def memory_brain_map():
+        return idle.growth.map()
+
+    @app.post("/api/memory/brains/proposals/{proposal_id}")
+    def memory_brain_decide(proposal_id: str, body: BrainDecisionInput):
+        result = idle.growth.decide(proposal_id, body.accept)
+        if result is None:
+            raise HTTPException(404, detail="Предложение не найдено.")
+        return result
+
+    @app.delete("/api/memory/brains/custom/{brain_id}")
+    def memory_brain_remove(brain_id: str):
+        if not idle.growth.remove_brain(brain_id):
+            raise HTTPException(404, detail="Мозг не найден.")
+        return {"removed": True}
+
+    @app.post("/api/memory/curiosity/{question_id}/dismiss")
+    def memory_curiosity_dismiss(question_id: str):
+        return {"dismissed": idle.growth.dismiss(question_id)}
 
     @app.get("/api/memory/entities")
     def memory_entities():
@@ -278,6 +304,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if trace and trace.get("traceId"):
             # Какие воспоминания использованы в ответе: их можно оценить прямо в чате.
             exchange = {**exchange, "memory": {"traceId": trace["traceId"], "items": trace["memories"]}}
+        if trace is not None:
+            try:
+                # Мини-мозг иногда уточняет пробел в знаниях; ответ разбирается как обычная реплика.
+                question = idle.growth.next_question(exchange.get("user", {}).get("text", ""))
+            except sqlite3.Error:
+                question = None
+            if question:
+                exchange = {**exchange, "curiosity": question}
         return exchange
 
     def demo_answer(text: str, trace: dict) -> str:

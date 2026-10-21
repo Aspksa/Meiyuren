@@ -200,3 +200,18 @@ button:focus-visible, input:focus-visible, .avatar:focus-visible { outline: 2px 
 .entity-panel__head { display: flex; justify-content: space-between; align-items: center; }
 .entity-panel__head button { background: none; border: 0; font-size: 16px; cursor: pointer; color: inherit; }
 .entity-panel__detail ul { margin: 6px 0; padding-left: 18px; }
+
+/* v0.31: любопытство мини-мозгов и карта мозгов. */
+.message__curiosity { margin-top: 6px; padding: 6px 8px; border-radius: 8px; font-size: 12px;
+  background: rgba(140, 110, 220, 0.1); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.message__curiosity button { background: none; border: 0; padding: 0; font-size: 11px; color: var(--muted);
+  cursor: pointer; text-decoration: underline; }
+.brain-map__proposal { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0;
+  padding: 8px 10px; border-radius: 10px; background: rgba(140, 110, 220, 0.12); }
+.brain-map__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.brain-map__brain { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 10px;
+  background: rgba(140, 110, 220, 0.06); }
+.brain-map__brain small { opacity: 0.8; }
+.brain-map__strong { color: #3f9a62; }
+.brain-map__sleeping { opacity: 0.6; }
+.brain-map__brain button { align-self: flex-start; margin-top: 4px; font-size: 11px; }
