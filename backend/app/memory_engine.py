@@ -1984,7 +1984,7 @@ class MemoryEngine:
                 "ORDER BY updated_at DESC LIMIT 1000"
             ).fetchall()
             edges=[{"source":r["left_id"],"target":r["right_id"],
-                    "relation":r["relation"],"weight":r["weight"]}
+                    "relation":r["relation"],"weight":r["weight"],"updatedAt":r["updated_at"]}
                    for r in links if r["left_id"] in allowed and r["right_id"] in allowed]
             revisions=conn.execute(
                 "SELECT r.memory_id,r.action,r.created_at FROM memory_revisions r "
