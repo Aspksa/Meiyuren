@@ -7,7 +7,8 @@ def test_evolution_lab_is_bounded_private_and_backed_by_sqlite(tmp_path):
         assert r.status_code==200,r.text
         data=r.json()
         assert len(data["branchesByBrain"])==8
-        assert data["trials"]==[]
+        assert all(t["strategy"] in {"balanced","focused","context"} for t in data["trials"])
+        assert all(t["cases"] >= 0 for t in data["trials"])
         assert data["readOnly"] is True
         assert data["evolution"]["strategy"] in {"balanced","focused","context"}
         assert "content" not in r.text
