@@ -6,6 +6,7 @@ import { Avatar } from './components/Avatar';
 import { ChatPanel } from './components/ChatPanel';
 import { SettingsPanel } from './components/SettingsPanel';
 import { useAppStore } from './store/useAppStore';
+import { getCloudSettings } from './services/cloudApi';
 
 const interactions = [
   { symbol: '↖', title: 'Нажми', description: 'Левая кнопка — откроется уютный чат.', marker: '01' },
@@ -18,6 +19,20 @@ export default function App() {
   const openSettings = useAppStore((s) => s.openSettings);
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
+  const [readyForChat, setReadyForChat] = useState(false);
+
+  // Cloud.ru credential + active model configuration are NOT a user login.
+  // When configured, skip the setup/marketing screen and open chat locally.
+  useEffect(() => {
+    const controller = new AbortController();
+    void getCloudSettings(controller.signal).then(state => {
+      if (controller.signal.aborted) return;
+      const ready = state.hasKey && state.enabled && Boolean(state.model);
+      setReadyForChat(ready);
+      if (ready) useAppStore.getState().openChat();
+    }).catch(() => { /* Offline/backend unavailable: keep local starting view. */ });
+    return () => controller.abort();
+  }, [cloudOpen]);
 
   // Escape слушаем на window: так он работает, даже когда фокус на body.
   // Сначала закрываются настройки (они поверх), затем чат.
@@ -45,10 +60,10 @@ export default function App() {
           <span className="brand__crest">✿</span>
           <span>MEIYUREN<small>Твоя маленькая магия</small></span>
         </a>
-        <nav className="site-nav" aria-label="Навигация">
+        {!readyForChat && <nav className="site-nav" aria-label="Навигация">
           <a href="#about">О Мэйюрэн</a>
           <a href="#controls">Управление</a>
-        </nav>
+        </nav>}
         <button type="button" className="header-action" onClick={openChat}>
           <span className="status-dot" aria-hidden="true" />
           Поговорить <span aria-hidden="true">↗</span>
@@ -56,6 +71,15 @@ export default function App() {
       </header>
 
       <main id="home">
+        {readyForChat ? <section className="ready-workspace" aria-label="Рабочее пространство Meiyuren">
+          <span className="eyebrow-small">MEIYUREN · АВТОНОМНЫЙ РЕЖИМ</span>
+          <h1>Мэйюрэн готова к разговору.</h1>
+          <p>Восемь мозгов самостоятельно развивают локальную память.
+            При необходимости открыть чат можно кнопкой выше или через аватар.</p>
+          <button className="button button--primary" type="button" onClick={openChat}>
+            Открыть чат ↗
+          </button>
+        </section> : <>
         <section className="hero" aria-labelledby="hero-title">
           <div className="hero__constellation" aria-hidden="true">
             <span className="hero__star hero__star--a">✦</span>
@@ -110,12 +134,13 @@ export default function App() {
             ))}
           </div>
         </section>
+        </>}
       </main>
 
       <footer className="site-footer">
         <span>✦ MEIYUREN © 2026</span>
         <span>Создано с любовью к маленьким чудесам</span>
-        <span className="site-footer__version">v0.7 · Memory Core</span>
+        <span className="site-footer__version">v0.14 · Autonomous Memory</span>
       </footer>
 
       <IconSidebar
