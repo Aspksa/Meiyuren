@@ -12,3 +12,5 @@ The live GET /api/memory/omega/overview endpoint uses only Memory Core's consent
 No external calls, autonomous source acquisition, real model training, secure remote federation,
 production migration to physically separate storage tiers or independently measured intelligence increase.
 All algorithms have CPU/memory bounds and the API is read-only.
+
+Deployment rule: merge only after current-head Linux and Windows CI success; operator retains control over promotions.
