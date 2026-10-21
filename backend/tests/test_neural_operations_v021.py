@@ -23,7 +23,11 @@ def test_maintenance_never_drops_valid_source_and_drops_orphans(tmp_path):
         store.feedback("valid","missing",True,eligible={"valid","missing"})
         operations=NeuralOperations(path)
         result=operations.tick(force=True)
-        assert result["ran"] and result["purged"]==1
+        # Фоновый цикл приложения мог убрать сироту раньше; важно, что её больше нет.
+        assert result["ran"] and result["purged"]<=1
+        with closing(db.connection(path)) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback "
+                                "WHERE 'missing' IN (left_id,right_id)").fetchone()[0]==0
         assert "valid" in operations._eligible()
         assert operations.tick()["reason"]=="interval"
 

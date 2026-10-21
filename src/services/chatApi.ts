@@ -30,7 +30,7 @@ export type MemorySummary = {
 export type MemoryPolicy = {
   allow_cloud_notes: boolean; allow_cloud_facts: boolean;
   auto_extract: boolean; auto_summaries: boolean; allow_cloud_embeddings: boolean;
-  auto_growth: boolean; auto_evolution: boolean;
+  auto_growth: boolean; auto_evolution: boolean; semantic_model?: boolean;
 };
 export type MemoryEvolution = {
   generation: number; strategy: string; evaluations: number; lastEvaluated: number;
@@ -457,4 +457,23 @@ export function describeIdleReport(report: IdleReport): string[] {
       : 'Проверка базы нашла проблему: стоит открыть настройки памяти.');
   }
   return lines;
+}
+
+export type MemoryEntity = { id: string; kind: 'person' | 'project' | 'place' | 'org' | 'tool'; name: string; role: string | null; facts: number };
+export type MemoryEntityDetail = Omit<MemoryEntity, 'facts'> & {
+  facts: MemoryFact[]; related: { id: string; kind: MemoryEntity['kind']; name: string; shared: number }[];
+};
+export type SemanticStatus = { model: string; state: string; downloaded: boolean; error: string | null; enabled: boolean };
+
+/** Граф памяти: люди, проекты, места, организации и инструменты из фактов. */
+export async function getMemoryEntities(): Promise<MemoryEntity[]> {
+  return (await parse<{ entities: MemoryEntity[] }>(await fetch('/api/memory/entities', { cache: 'no-store' }))).entities;
+}
+
+export async function getMemoryEntity(id: string): Promise<MemoryEntityDetail> {
+  return parse(await fetch('/api/memory/entities/' + encodeURIComponent(id), { cache: 'no-store' }));
+}
+
+export async function getSemanticStatus(): Promise<SemanticStatus> {
+  return parse(await fetch('/api/memory/semantic', { cache: 'no-store' }));
 }

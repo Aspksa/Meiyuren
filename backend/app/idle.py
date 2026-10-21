@@ -18,7 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import db
+from . import db, semantic
 from .memory_engine import (
     AUTO_PRIVATE, SECRET, TOKENS, MemoryEngine, _keywords, canonical, now, preference_topic,
     drop_backups, local_vector,
@@ -58,12 +58,24 @@ class IdleRuntime:
             last = conn.execute(
                 "SELECT * FROM idle_runs ORDER BY started_at DESC LIMIT 1").fetchone()
         idle_for = now() - self.last_activity()
+        download = self._model_download()
         return {
             "idleAfterMs": IDLE_AFTER, "runEveryMs": RUN_EVERY,
             "idleForMs": max(0, idle_for), "isIdle": idle_for >= IDLE_AFTER,
             "lastRun": self._run(last) if last else None,
-            "externalCalls": False,
+            # Единственный выход в сеть — разовое скачивание модели смысла.
+            "externalCalls": download == "downloading",
+            "modelDownload": download,
         }
+
+    def _model_download(self) -> str:
+        """off — не нужно; pending — скачается в простое; downloading — идёт; done — на диске."""
+        model = semantic.model_for(self.path)
+        if model.ready or model.downloaded():
+            return "done"
+        if not self.engine.policy()["semantic_model"] or semantic.TextEmbedding is None:
+            return "off"
+        return "downloading" if model.state == "downloading" else "pending"
 
     @staticmethod
     def _run(row) -> dict:
@@ -85,7 +97,9 @@ class IdleRuntime:
                 return conn.execute("UPDATE idle_runs SET seen=1 WHERE seen=0").rowcount
 
     def tick(self, *, force: bool = False) -> dict:
-        if not self._lock.acquire(blocking=False):
+        # Ручной запуск ждёт короткую фоновую проверку, а не отвечает «занято».
+        locked = self._lock.acquire(timeout=30) if force else self._lock.acquire(blocking=False)
+        if not locked:
             return {"ran": False, "reason": "busy"}
         try:
             stamp = now()
@@ -112,6 +126,7 @@ class IdleRuntime:
             ("selfTraining", self.self_train),
             ("unfinished", self.unfinished),
             ("vectors", self.vectorize),
+            ("meaning", self.meaning),
             ("health", self.health),
         )
         report: dict = {}
@@ -182,6 +197,7 @@ class IdleRuntime:
                         for table in ("memory_fts", "memory_vectors", "memory_local_vectors"):
                             conn.execute(f"DELETE FROM {table} WHERE item_id=?", (old,))
                         conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?", (old, old))
+                        MemoryEngine._drop_derived(conn, old)
             self.engine.grow_branches()
             self.engine.rebuild_deep_index()
         topics: dict[str, dict[bool, str]] = {}
@@ -257,6 +273,21 @@ class IdleRuntime:
                              "(SELECT id FROM memory_items WHERE status='confirmed')")
                 total = conn.execute("SELECT COUNT(*) FROM memory_local_vectors").fetchone()[0]
         return {"updated": len(values), "total": total}
+
+    # -- 5b. meaning model ------------------------------------------------
+    def meaning(self) -> dict:
+        """Модель смысла: один раз скачать (в фоне), затем считать векторы фактов."""
+        if not self.engine.policy()["semantic_model"]:
+            return {"state": "off"}
+        model = semantic.model_for(self.path)
+        if not model.ready:
+            model.start_loading(allow_download=True,
+                                then=lambda: self.engine.semantic_index(model))
+            return model.status()
+        try:
+            return {"state": "ready", **self.engine.semantic_index(model)}
+        except Exception as exc:  # сторонняя ONNX-модель не должна сорвать бэкап и проверку базы
+            return {"state": "failed", "error": type(exc).__name__}
 
     # -- 6. health ---------------------------------------------------------
     def health(self) -> dict:

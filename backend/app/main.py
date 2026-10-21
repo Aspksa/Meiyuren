@@ -14,7 +14,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import cloud, db, history
+from . import cloud, db, history, semantic
 from .memory_engine import MemoryEngine, SECRET
 from .evolution_runtime import EvolutionRuntime
 from .idle import IdleRuntime
@@ -59,6 +59,7 @@ class MemoryPolicyInput(BaseModel):
     allow_cloud_embeddings: bool | None = None
     auto_growth: bool | None = None
     auto_evolution: bool | None = None
+    semantic_model: bool | None = None
 
 
 class CloudBrainsInput(BaseModel):
@@ -149,6 +150,9 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 except asyncio.TimeoutError:
                     pass
 
+        if engine.policy()["semantic_model"]:
+            # Уже скачанная модель смысла поднимается в фоне при запуске; без сети.
+            semantic.model_for(database).start_loading(allow_download=False)
         task = asyncio.create_task(worker())
         try:
             yield
@@ -156,7 +160,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.29.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.30.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -202,6 +206,21 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/neural/operations/consolidate")
     def neural_operations_consolidate():
         return neural_ops.tick(force=True)
+
+    @app.get("/api/memory/entities")
+    def memory_entities():
+        return {"entities": engine.entity_list()}
+
+    @app.get("/api/memory/entities/{entity_id}")
+    def memory_entity(entity_id: str):
+        detail = engine.entity_detail(entity_id)
+        if detail is None:
+            raise HTTPException(404, detail="Такого человека, проекта или места в памяти нет.")
+        return detail
+
+    @app.get("/api/memory/semantic")
+    def memory_semantic():
+        return {**semantic.model_for(database).status(), "enabled": engine.policy()["semantic_model"]}
 
     @app.get("/api/idle/status")
     def idle_status():
