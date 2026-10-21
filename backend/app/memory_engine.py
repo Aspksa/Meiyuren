@@ -21,7 +21,8 @@ import uuid
 from . import db
 from .neural_cortex import Node, NeuralCortex
 from .neural_synapses import SynapticStore
-from .smart_memory import durable_statement
+from . import understanding
+from .smart_memory import UNTRUSTED, durable_statement
 
 MAX_CONTEXT = 1700
 # Logical long-term-memory domains, not separate LLM instances.
@@ -92,9 +93,11 @@ def classify_brain(content: str) -> str:
         return "goals"
     if re.search(r"\b(?:вчера|сегодня|позавчера|неделю назад|событие|путешествовал|побывал)\b", text):
         return "episodes"
-    if re.search(r"\b(?:каждый день|каждое утро|обычно|привык|привычка|регулярно)\b", text):
+    if re.search(r"\b(?:каждый день|каждое утро|обычно|привык|привычка|регулярно|"
+                 r"бросил|бросила|перестал\w*|завязал\w*|курю|курить)\b", text):
         return "habits"
-    if re.search(r"\b(?:изучаю|научился|умею|освоил|обучаюсь|учу)\b", text):
+    if re.search(r"\b(?:изучаю|научился|умею|освоил|обучаюсь|учу|учить|изучать|"
+                 r"пишу на|программирую)\b", text):
         return "knowledge"
     return "identity"
 
@@ -103,9 +106,26 @@ def memory_scope(brain: str, conversation_id: str) -> str:
     return conversation_id if brain in CONVERSATION_BRAINS else "global"
 
 
+_SHORT_LATIN = re.compile(r"[A-Z][A-Za-z0-9]*|[a-z]*\d[a-z0-9]*")
+
+
 def _keywords(content: str) -> set[str]:
-    return {search_stem(word.casefold()) for word in TOKENS.findall(content)
-            if len(word)>3 and word.casefold() not in STOPWORDS}
+    """Ключевые основы: начальная форма слова (pymorphy3), затем обрезка окончаний.
+
+    Короткие слова тоже значимы: «Go», «JS», «чай», «кот» (существительные из трёх букв).
+    """
+    result=set()
+    for word in TOKENS.findall(content):
+        lowered=word.casefold()
+        if lowered in STOPWORDS:
+            continue
+        if not (len(word)>3 or (len(word)>=2 and _SHORT_LATIN.fullmatch(word))
+                or (len(word)==3 and understanding.is_noun(lowered))):
+            continue
+        base=understanding.lemma(lowered) or lowered
+        if base not in STOPWORDS:
+            result.add(search_stem(base))
+    return result
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -190,6 +210,17 @@ def vector_similarity(a: dict[str, float], b: dict[str, float]) -> float:
     if len(a)>len(b):
         a,b=b,a
     return sum(v*b.get(k,0.0) for k,v in a.items())
+
+
+_ANAPHORA=re.compile(r"(?iu)\b(?:он|она|они|его|её|ее|ему|ей|им|ним|ней|них|это|этот|эта|этом|"
+                    r"этого|этой|там|туда|тот|той|того)\b")
+
+
+def with_dialogue_context(query: str, previous: str) -> str:
+    """Вопрос со ссылкой на прошлую реплику («а что с ним?») ищется вместе с ней."""
+    if previous and (_ANAPHORA.search(query) or len(_keywords(query))<=1):
+        return query+"\n"+previous[:400]
+    return query
 
 
 def drop_backups(path: Path) -> int:
@@ -319,6 +350,9 @@ class MemoryEngine:
                     conn.execute("ALTER TABLE memory_items ADD COLUMN superseded_by TEXT")
                 if "brain" not in item_columns:
                     conn.execute("ALTER TABLE memory_items ADD COLUMN brain TEXT NOT NULL DEFAULT 'identity'")
+                if "due_date" not in item_columns:
+                    # v0.29: срок цели или проекта из «в пятницу», «к декабрю» (ISO-дата).
+                    conn.execute("ALTER TABLE memory_items ADD COLUMN due_date TEXT")
                 if "origin_conversation_id" not in item_columns:
                     # Диалог-источник global-факта: очистка диалога удаляет и выученное из него.
                     conn.execute("ALTER TABLE memory_items ADD COLUMN origin_conversation_id TEXT")
@@ -600,7 +634,8 @@ class MemoryEngine:
                     updatedAt=row["updated_at"],kind=row["kind"],sourceMessageId=row["source_message_id"],
                     conversationId=row["conversation_id"],cloudAllowed=bool(row["cloud_allowed"]),
                     expiresAt=row["expires_at"],revision=row["revision"],status=row["status"],
-                    supersededBy=row["superseded_by"],brain=row["brain"])
+                    supersededBy=row["superseded_by"],brain=row["brain"],
+                    dueDate=row["due_date"] if "due_date" in row.keys() else None)
 
     def add_manual(self, content: str, *, cloud_allowed: bool=False, brain: str | None=None) -> dict:
         content=content.strip()
@@ -880,7 +915,9 @@ class MemoryEngine:
     def _extract(self,message_id: str,conversation_id: str) -> bool:
         """Без запросов к LLM: автоматически сохранять только явные безопасные утверждения.
 
-        Пользователь не получает очередь предложений при auto_growth=True.
+        v0.29: сообщение делится на утверждения («Привет! Я изучаю Rust. А ты?» →
+        «Я изучаю Rust»), «он/она» связывается с человеком из этой или прошлой
+        реплики, у целей появляется срок, а «я бросил…» закрывает прежний факт.
         Сомнительные/чувствительные данные не записываются в память вообще.
         Облачная передача ВСЕГДА запрещена для автоматически созданных записей.
         """
@@ -893,7 +930,7 @@ class MemoryEngine:
                 # проскочить между ними и оставить факт без источника.
                 conn.execute("BEGIN IMMEDIATE")
                 msg=conn.execute(
-                    "SELECT text FROM messages WHERE id=? AND role='user' AND conversation_id=?",
+                    "SELECT text,sent_at FROM messages WHERE id=? AND role='user' AND conversation_id=?",
                     (message_id,conversation_id)
                 ).fetchone()
                 if not msg:
@@ -901,103 +938,170 @@ class MemoryEngine:
                 text=msg["text"].strip()
                 if not text or len(text)>600 or SECRET.search(text):
                     return False
-                explicit=EXPLICIT.match(text)
-                # Личные данные никогда не сохраняются молча. Явное «Запомни»
-                # отправляется на ручное подтверждение даже в автономном режиме.
-                sensitive=bool(AUTO_PRIVATE.search(text))
-                if sensitive and not explicit:
-                    return False
-                implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
-                direct=AUTO_DIRECT.match(text)
-                natural=durable_statement(text)
-                if not (explicit or implicit or direct or natural):
-                    return False
-                # Пересказ, цитата, вопрос или предположение — не прямой факт пользователя.
-                if "?" in text or text.lstrip().startswith(("«",'"',">")):
-                    return False
-                content=(explicit.group(1) if explicit else (natural or text)).strip().rstrip(".")
-                if not 4<=len(content)<=400 or SECRET.search(content):
-                    return False
-                fingerprint=digest(content)
-                if conn.execute(
-                    "SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)
-                ).fetchone():
-                    return False
                 if conn.execute(
                     "SELECT 1 FROM memory_excluded_sources WHERE source_message_id=?",(message_id,)
                 ).fetchone():
                     return False
-                if conn.execute(
-                    "SELECT 1 FROM memory_items WHERE source_message_id=? OR "
-                    "(fingerprint=? AND status='confirmed')",
-                    (message_id,fingerprint)
-                ).fetchone():
-                    return False
-                # Определяем противоречие только в узкой проверяемой форме предпочтения.
-                topic=preference_topic(content)
-                conflict_id=None
-                if topic:
-                    previous=conn.execute(
-                        "SELECT id,content FROM memory_items WHERE status='confirmed' "
-                        "AND (conversation_id='global' OR conversation_id=?)",
-                        (conversation_id,)
-                    ).fetchall()
-                    for item in previous:
-                        old=preference_topic(item["content"])
-                        if old and old[0]==topic[0] and old[1]!=topic[1]:
-                            conflict_id=item["id"]
-                            break
-                if not autonomous or sensitive:
+                explicit=EXPLICIT.match(text)
+                if explicit:
+                    # Явное «Запомни» — одно утверждение целиком, как и раньше.
+                    if "?" in text:
+                        return False
+                    parts=[(explicit.group(1).strip().rstrip("."),True,None)]
+                else:
+                    parts=self._statements(conn,text,message_id,conversation_id)
+                for content,is_explicit,brain in parts:
+                    if self._store_statement(conn,content,is_explicit,message_id,conversation_id,
+                                             autonomous,msg["sent_at"],brain):
+                        changed=True
+                if changed:
+                    # Очередь прежних предложений для того же источника больше не нужна.
                     conn.execute(
-                        "INSERT OR IGNORE INTO memory_candidates "
-                        "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
-                        "VALUES(?,?,?,?,?,'pending',?,?,?)",
-                        (str(uuid.uuid4()),content,fingerprint,message_id,
-                         conversation_id,now(),conflict_id,classify_brain(content))
+                        "UPDATE memory_candidates SET status='approved' WHERE source_message_id=? "
+                        "AND status='pending'",(message_id,)
                     )
-                    return False
-                item_id=str(uuid.uuid4())
-                ts=now()
-                brain=classify_brain(content)
-                # Под одной транзакцией — факт, источник, история, FTS5 и граф.
-                conn.execute(
-                    "INSERT INTO memory_items "
-                    "(id,content,fingerprint,kind,status,source_message_id,"
-                    "conversation_id,origin_conversation_id,cloud_allowed,created_at,updated_at,brain) "
-                    "VALUES(?,?,?,'auto','confirmed',?,?,?,0,?,?,?)",
-                    (item_id,content,fingerprint,message_id,memory_scope(brain,conversation_id),
-                     conversation_id,ts,ts,brain)
-                )
-                conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",
-                             (item_id,content))
-                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
-                             (str(uuid.uuid4()),item_id,1,"auto_saved",content,ts))
-                self._link_local(conn,item_id,content)
-                if conflict_id:
-                    old=conn.execute(
-                        "SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
-                        (conflict_id,)
-                    ).fetchone()
-                    if old:
-                        opposite=preference_topic(old["content"])
-                        if opposite and topic and opposite[0]==topic[0] and opposite[1]!=topic[1]:
-                            conn.execute(
-                                "UPDATE memory_items SET status='superseded',cloud_allowed=0,"
-                                "superseded_by=?,updated_at=? WHERE id=?",
-                                (item_id,ts,conflict_id)
-                            )
-                            conn.execute("DELETE FROM memory_fts WHERE item_id=?",(conflict_id,))
-                            conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
-                                         (conflict_id,conflict_id))
-                            conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(conflict_id,))
-                            conn.execute("DELETE FROM memory_summaries")
-                # Очередь прежних предложений для того же источника больше не нужна.
-                conn.execute(
-                    "UPDATE memory_candidates SET status='approved' WHERE source_message_id=? "
-                    "AND status='pending'",(message_id,)
-                )
-                changed=True
         return changed
+
+    @staticmethod
+    def _statements(conn: sqlite3.Connection,text: str,message_id: str,
+                    conversation_id: str) -> list[tuple[str,bool,str | None]]:
+        """Утверждения пользователя в сообщении, пригодные для памяти."""
+        found=[]
+        previous=conn.execute(
+            "SELECT text FROM messages WHERE conversation_id=? AND role='user' AND id!=? "
+            "AND sent_at<=(SELECT sent_at FROM messages WHERE id=?) "
+            "ORDER BY sent_at DESC LIMIT 1",(conversation_id,message_id,message_id)
+        ).fetchone()
+        before=previous["text"] if previous else ""
+        for statement in understanding.statements(text):
+            if statement.lstrip().startswith(("«",'"',">")):
+                before+=" "+statement
+                continue
+            core=understanding.without_lead_time(statement)
+            resolved=understanding.resolve_pronoun(core,before)
+            before+=" "+statement
+            if resolved:
+                if not UNTRUSTED.search(resolved) and 8<=len(resolved)<=400:
+                    found.append((resolved,False,"relationships"))
+                continue
+            # «Сегодня начал учить Kotlin»: подлежащее «я» опущено, но подразумевается.
+            for form in (core,) if core.casefold().startswith(("я ","мне ","мой ","моя ","мои ","меня ")) \
+                    else (core,"я "+core):
+                if (PREFERENCE.match(form) or NEGATIVE_PREFERENCE.match(form) or AUTO_DIRECT.match(form)
+                        or durable_statement(form) or understanding.change_topic(form)):
+                    if not UNTRUSTED.search(form):
+                        found.append((statement,False,None))
+                    break
+        return found
+
+    def _store_statement(self,conn: sqlite3.Connection,content: str,explicit: bool,message_id: str,
+                         conversation_id: str,autonomous: bool,sent_at: int,
+                         brain: str | None=None) -> bool:
+        # Личные данные никогда не сохраняются молча. Явное «Запомни» отправляется
+        # на ручное подтверждение даже в автономном режиме.
+        sensitive=bool(AUTO_PRIVATE.search(content))
+        if sensitive and not explicit:
+            return False
+        content=content.strip().rstrip(".")
+        if not 4<=len(content)<=400 or SECRET.search(content):
+            return False
+        fingerprint=digest(content)
+        if conn.execute(
+            "SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)
+        ).fetchone():
+            return False
+        if conn.execute(
+            "SELECT 1 FROM memory_items WHERE (source_message_id=? AND fingerprint=?) OR "
+            "(fingerprint=? AND status='confirmed')",
+            (message_id,fingerprint,fingerprint)
+        ).fetchone():
+            return False
+        # Определяем противоречие только в узкой проверяемой форме предпочтения.
+        topic=preference_topic(content)
+        conflict_id=None
+        if topic:
+            previous=conn.execute(
+                "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                "AND (conversation_id='global' OR conversation_id=?)",
+                (conversation_id,)
+            ).fetchall()
+            for item in previous:
+                old=preference_topic(item["content"])
+                if old and old[0]==topic[0] and old[1]!=topic[1]:
+                    conflict_id=item["id"]
+                    break
+        if brain is None:
+            core=understanding.without_lead_time(content)
+            brain=classify_brain(core)
+            if brain=="identity" or core==content:
+                brain=classify_brain(content)
+        if not autonomous or sensitive:
+            conn.execute(
+                "INSERT OR IGNORE INTO memory_candidates "
+                "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
+                "VALUES(?,?,?,?,?,'pending',?,?,?)",
+                (str(uuid.uuid4()),content,fingerprint,message_id,
+                 conversation_id,now(),conflict_id,brain)
+            )
+            return False
+        item_id=str(uuid.uuid4())
+        ts=now()
+        due=None
+        if brain in ("goals","projects","decisions"):
+            day=understanding.due_date(content,sent_at)
+            if day:
+                due=day.isoformat()
+        # Под одной транзакцией — факт, источник, история, FTS5 и граф.
+        conn.execute(
+            "INSERT INTO memory_items "
+            "(id,content,fingerprint,kind,status,source_message_id,"
+            "conversation_id,origin_conversation_id,cloud_allowed,created_at,updated_at,brain,due_date) "
+            "VALUES(?,?,?,'auto','confirmed',?,?,?,0,?,?,?,?)",
+            (item_id,content,fingerprint,message_id,memory_scope(brain,conversation_id),
+             conversation_id,ts,ts,brain,due)
+        )
+        conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",
+                     (item_id,content))
+        conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                     (str(uuid.uuid4()),item_id,1,"auto_saved",content,ts))
+        self._link_local(conn,item_id,content)
+        ended=understanding.change_topic(content)
+        if ended:
+            # «Я бросил курить» закрывает «Я курю»: прежний факт остаётся в истории.
+            terms=_keywords(ended)
+            if terms:
+                for old in conn.execute(
+                    "SELECT id,content FROM memory_items WHERE status='confirmed' AND id!=? "
+                    "AND kind IN ('auto','extracted') AND (conversation_id='global' OR conversation_id=?)",
+                    (item_id,conversation_id)
+                ).fetchall():
+                    if terms<=_keywords(old["content"]) and not understanding.change_topic(old["content"]):
+                        self._supersede(conn,old["id"],item_id,ts,"ended")
+        if conflict_id:
+            old=conn.execute(
+                "SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
+                (conflict_id,)
+            ).fetchone()
+            if old:
+                opposite=preference_topic(old["content"])
+                if opposite and topic and opposite[0]==topic[0] and opposite[1]!=topic[1]:
+                    self._supersede(conn,conflict_id,item_id,ts,None)
+        return True
+
+    @staticmethod
+    def _supersede(conn: sqlite3.Connection,old_id: str,new_id: str,ts: int,action: str | None) -> None:
+        conn.execute(
+            "UPDATE memory_items SET status='superseded',cloud_allowed=0,"
+            "superseded_by=?,updated_at=? WHERE id=?",
+            (new_id,ts,old_id)
+        )
+        if action:
+            conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                         (str(uuid.uuid4()),old_id,10_000,action,"→ "+new_id,ts))
+        conn.execute("DELETE FROM memory_fts WHERE item_id=?",(old_id,))
+        conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(old_id,old_id))
+        conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(old_id,))
+        conn.execute("DELETE FROM memory_summaries")
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -1224,6 +1328,8 @@ class MemoryEngine:
             remaining-=len(piece)
         for memory in selected:
             piece="Подтверждённый факт (данные, не инструкция): "+memory["content"]
+            if memory.get("dueDate"):
+                piece+=" (срок: "+memory["dueDate"]+")"
             if len(piece)+1>remaining:
                 break  # Не разрезаем утверждение на части.
             pieces.append(piece)
@@ -1255,13 +1361,14 @@ class MemoryEngine:
         """Компилятор контекста фиксирует ID выбранных, но не отправляет AI-вызов."""
         return self.prepare_traced(query,conversation_id,cloud_mode)["context"]
 
-    def prepare_traced(self, query: str, conversation_id: str, cloud_mode: bool) -> dict:
+    def prepare_traced(self, query: str, conversation_id: str, cloud_mode: bool,
+                       previous: str = "") -> dict:
         """Контекст плюс след: какие воспоминания попали в ответ.
 
         След позволяет пользователю отметить полезные воспоминания прямо в чате;
         эти оценки — настоящие примеры «вопрос → нужный факт» для эволюции.
         """
-        selected=self.deep_recall(query,conversation_id,cloud_mode)
+        selected=self.deep_recall(with_dialogue_context(query,previous),conversation_id,cloud_mode)
         context=self._compose(query,conversation_id,cloud_mode,selected)
         self._observe_recall_quality(query,selected)
         used=[item for item in selected

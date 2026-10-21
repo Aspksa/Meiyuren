@@ -10,7 +10,7 @@ next visit, local vectors, integrity check and a daily backup.
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 import sqlite3
 import threading
@@ -229,10 +229,17 @@ class IdleRuntime:
     def unfinished(self) -> dict:
         """Unfinished projects, goals and promises to mention on return."""
         overview = self.engine.deep_overview("main", False)
-        items = [item["content"] for item in overview["continuation"]
-                 if item["brain"] in ("projects", "goals")
-                 and not AUTO_PRIVATE.search(item["content"])][:6]
-        return {"items": items}
+        today = date.today()
+        soon, rest = [], []
+        for item in overview["continuation"]:
+            if item["brain"] not in ("projects", "goals") or AUTO_PRIVATE.search(item["content"]):
+                continue
+            due = item.get("dueDate")
+            if due and today.isoformat() <= due <= (today + timedelta(days=7)).isoformat():
+                soon.append(f"{item['content']} (срок {due[8:10]}.{due[5:7]})")
+            else:
+                rest.append(item["content"])
+        return {"items": (soon + rest)[:6], "dueSoon": len(soon)}
 
     # -- 5. local vectors --------------------------------------------------
     def vectorize(self) -> dict:

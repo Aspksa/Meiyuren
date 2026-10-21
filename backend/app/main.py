@@ -156,7 +156,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.28.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.29.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -240,9 +240,15 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not history.ensure_conversation(database, conv_id):
             raise HTTPException(status_code=404, detail="Диалог не найден.")
 
+    def previous_user_text(conversation_id: str) -> str:
+        # «А что с ним?» понимается через прошлую реплику пользователя.
+        earlier = [m for m in history.messages(database, conversation_id, limit=6) if m["role"] == "user"]
+        return earlier[-1]["text"] if earlier else ""
+
     async def memory_trace(query: str, conversation_id: str, cloud_mode: bool) -> dict:
         # Поиск по памяти синхронный и растёт с её размером: не блокируем event loop.
-        return await asyncio.to_thread(engine.prepare_traced, query, conversation_id, cloud_mode)
+        return await asyncio.to_thread(engine.prepare_traced, query, conversation_id, cloud_mode,
+                                       previous_user_text(conversation_id))
 
     def observed(exchange: dict, conv_id: str, trace: dict | None = None) -> dict:
         try:
