@@ -22,7 +22,7 @@ def test_natural_message_enters_memory_and_recall(tmp_path):
             "text":"Мой проект называется Meiyuren"})
         assert result.status_code==201,result.text
         process=client.post("/api/memory/process")
-        assert process.status_code in (200,404),process.text
+        assert process.status_code==200,process.text
         # Background worker is asynchronous: explicitly process if route exists.
         data=client.get("/api/memory/brains").json()
-        assert "projects" in data["brains"]
+        assert data["brains"]["projects"] >= 1
