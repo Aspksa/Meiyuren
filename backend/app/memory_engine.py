@@ -561,11 +561,8 @@ class MemoryEngine:
                 # Связанная с историей память могла попасть в любую выписку.
                 conn.execute("DELETE FROM memory_summaries")
         if self.policy()["auto_growth"]:
-            if self.policy()["auto_growth"]:
             self.grow_branches()
         self.rebuild_deep_index()
-        if self.policy()["auto_evolution"]:
-            self.evolve()
         return True
 
     def explain(self,item_id: str) -> dict | None:
@@ -1132,8 +1129,11 @@ class MemoryEngine:
                     "right_id NOT IN (SELECT id FROM memory_items WHERE status='confirmed' "
                     "AND (expires_at IS NULL OR expires_at>?))",(ts,ts)
                 )
-        self.grow_branches()
+        if self.policy()["auto_growth"]:
+            self.grow_branches()
         self.rebuild_deep_index()
+        if self.policy()["auto_evolution"]:
+            self.evolve()
         return True
 
     def evolution_status(self) -> dict:
