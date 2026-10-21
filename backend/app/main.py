@@ -60,12 +60,21 @@ class MemoryPolicyInput(BaseModel):
     auto_evolution: bool | None = None
 
 
+class CloudBrainsInput(BaseModel):
+    brains: dict[str, bool]
+
+
 class MemoryReviewInput(BaseModel):
     approve: bool
     cloudAllowed: bool = False
 
 
 class MemoryFeedbackInput(BaseModel):
+    helpful: bool
+
+
+class RecallFeedbackInput(BaseModel):
+    memoryId: str = Field(min_length=1, max_length=80)
     helpful: bool
 
 
@@ -116,8 +125,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     db.initialise(database)
     history.initialise(database)
     engine = MemoryEngine(database)
-    evolution = EvolutionRuntime(database.with_name('cognitive_evolution.sqlite3'))
     engine.initialize(backup_existing=False)
+    evolution = EvolutionRuntime(database.with_name('cognitive_evolution.sqlite3'), engine)
     neural_ops = NeuralOperations(database)
 
     @asynccontextmanager
@@ -144,7 +153,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.21.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.27.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -210,23 +219,33 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         if not history.ensure_conversation(database, conv_id):
             raise HTTPException(status_code=404, detail="Диалог не найден.")
 
-    def memory_context(query: str, conversation_id: str, cloud_mode: bool) -> str:
-        return engine.prepare(query, conversation_id, cloud_mode)
+    async def memory_trace(query: str, conversation_id: str, cloud_mode: bool) -> dict:
+        # Поиск по памяти синхронный и растёт с её размером: не блокируем event loop.
+        return await asyncio.to_thread(engine.prepare_traced, query, conversation_id, cloud_mode)
 
-    def observed(exchange: dict, conv_id: str) -> dict:
+    def observed(exchange: dict, conv_id: str, trace: dict | None = None) -> dict:
         try:
             engine.observe(exchange, conv_id)
         except Exception:
             # Ошибка индексации не должна превращать уже оплаченный Cloud-ответ в ошибку.
             logging.getLogger(__name__).exception("Memory observe: запись в очередь не удалась")
+        if trace and trace.get("traceId"):
+            # Какие воспоминания использованы в ответе: их можно оценить прямо в чате.
+            exchange = {**exchange, "memory": {"traceId": trace["traceId"], "items": trace["memories"]}}
         return exchange
+
+    def demo_answer(text: str, trace: dict) -> str:
+        return generate_reply(text, trace["context"], [m["content"] for m in trace["memories"]])
 
     @app.get("/api/chat/messages")
     def list_messages(
         limit: int = Query(default=100, ge=1, le=500),
         conversationId: str = Query(default="main", max_length=40),
+        before: str | None = Query(default=None, max_length=40),
     ) -> dict:
         require_conversation(conversationId)
+        if before:
+            return {"messages": history.messages_before(database, conversationId, before, limit)}
         return {"messages": history.messages(database, conversationId, limit)}
 
     @app.post("/api/chat/messages", status_code=201)
@@ -238,10 +257,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         expected_epoch = history.conversation_epoch(database, body.conversationId)
         settings = db.cloud_config(database)
         if is_diagnostic_request(text):
-            reply = diagnostic_report(engine.status())
+            reply = diagnostic_report(await asyncio.to_thread(engine.status))
             return observed(history.append_exchange(
                 database, text, reply, body.conversationId, expected_epoch), body.conversationId)
-        notes = memory_context(text, body.conversationId, settings["enabled"])
+        trace = await memory_trace(text, body.conversationId, settings["enabled"])
         if settings["enabled"]:
             if not body.requestId:
                 raise HTTPException(status_code=422, detail="Для Cloud.ru требуется идентификатор запроса.")
@@ -258,15 +277,16 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             history.mark_cloud_conversation(database, body.requestId, body.conversationId)
             previous = history.messages(database, body.conversationId, limit=12)
             try:
-                response = await cloud.generate_cloud_reply(settings["model"], previous, notes, text)
+                response = await cloud.generate_cloud_reply(settings["model"], previous, trace["context"], text)
                 result = history.complete_cloud_exchange(database, body.requestId, body.conversationId, text, response, expected_epoch)
-                return observed(result, body.conversationId)
+                return observed(result, body.conversationId, trace)
             except Exception:
                 # Сохраняем резервирование: повтор с тем же ID не создаст второй платный вызов.
                 db.fail_request(database, body.requestId)
                 raise
-        response = generate_reply(text, notes)
-        return observed(history.append_exchange(database, text, response, body.conversationId, expected_epoch), body.conversationId)
+        response = demo_answer(text, trace)
+        return observed(history.append_exchange(database, text, response, body.conversationId, expected_epoch),
+                        body.conversationId, trace)
 
     @app.delete("/api/chat/messages")
     def remove_messages(conversationId: str = Query(default="main", max_length=40)) -> dict:
@@ -286,6 +306,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         is_brain_diagnostic = is_diagnostic_request(text)
         if settings["enabled"] and not body.requestId and not is_brain_diagnostic:
             raise HTTPException(422, detail="Для Cloud.ru требуется идентификатор запроса.")
+        mode = "cloud" if settings["enabled"] else "demo"
 
         def event(name, data):
             # Настоящие переводы строк: по пустой строке браузер отделяет SSE-события.
@@ -294,18 +315,20 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         async def stream():
             reserved = False
             completed = False
+            tokens: list[str] = []
             try:
                 if is_brain_diagnostic:
-                    reply = diagnostic_report(engine.status())
+                    reply = diagnostic_report(await asyncio.to_thread(engine.status))
                     result = observed(history.append_exchange(
                         database, text, reply, body.conversationId, expected_epoch), body.conversationId)
                     yield event("delta", {"text": reply})
                     yield event("done", result)
                     return
+                trace = await memory_trace(text, body.conversationId, settings["enabled"])
                 if not settings["enabled"]:
                     result = observed(history.append_exchange(
-                        database, text, generate_reply(text, memory_context(text, body.conversationId, False)),
-                        body.conversationId, expected_epoch), body.conversationId)
+                        database, text, demo_answer(text, trace),
+                        body.conversationId, expected_epoch), body.conversationId, trace)
                     yield event("delta", {"text": result["assistant"]["text"]})
                     yield event("done", result)
                     return
@@ -315,15 +338,13 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                     return
                 if state != "new":
                     yield event("error", {"message": "Запрос уже отправлен или его статус неизвестен. "
-                        "Повторная платная отправка заблокирована."})
+                        "Повторная платная отправка заблокирована.", "mode": mode, "paid": True})
                     return
                 reserved = True
                 history.mark_cloud_conversation(database, body.requestId, body.conversationId)
                 previous = history.messages(database, body.conversationId, limit=12)
-                tokens = []
                 async for piece in cloud.stream_cloud_reply(
-                    settings["model"], previous,
-                    memory_context(text, body.conversationId, True), text
+                    settings["model"], previous, trace["context"], text
                 ):
                     tokens.append(piece)
                     yield event("delta", {"text": piece})
@@ -331,18 +352,45 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 result = history.complete_cloud_exchange(
                     database, body.requestId, body.conversationId, text, answer, expected_epoch)
                 completed = True
-                observed(result, body.conversationId)
+                result = observed(result, body.conversationId, trace)
                 yield event("done", result)
             except asyncio.CancelledError:
                 raise
+            except history.StaleConversation:
+                yield event("error", {"message": "История диалога очищена во время ответа; ответ не сохранён.",
+                                      "mode": mode, "paid": mode == "cloud"})
             except cloud.CloudError as exc:
-                yield event("error", {"message": str(exc)})
+                saved = interrupted(tokens, str(exc)) if reserved else None
+                yield event("error", {"message": str(exc), "mode": mode, "paid": True, "saved": saved})
             except Exception:
-                yield event("error", {"message": "Поток прервался. Запрос мог быть обработан Cloud.ru; "
-                    "повтор с тем же ID заблокирован."})
+                logging.getLogger(__name__).exception("Chat stream: непредвиденная ошибка")
+                if mode == "cloud":
+                    saved = interrupted(tokens, "Поток прервался") if reserved else None
+                    yield event("error", {"message": "Поток прервался. Запрос мог быть обработан Cloud.ru; "
+                        "повтор с тем же ID заблокирован.", "mode": mode, "paid": True, "saved": saved})
+                else:
+                    yield event("error", {"message": "Не удалось обработать сообщение локально. "
+                        "Попробуйте ещё раз.", "mode": mode, "paid": False})
             finally:
                 if reserved and not completed:
                     db.fail_request(database, body.requestId)
+                    if tokens and not saved_once:
+                        # Клиент отключился (кнопка «Стоп»): сохраняем уже оплаченную часть.
+                        interrupted(tokens, "Ответ остановлен")
+
+        saved_once: list[bool] = []
+
+        def interrupted(tokens: list[str], reason: str) -> dict | None:
+            if not tokens or saved_once:
+                return None
+            saved_once.append(True)
+            try:
+                return history.save_interrupted_exchange(
+                    database, body.requestId, body.conversationId, text, "".join(tokens),
+                    reason + " — частичный ответ", expected_epoch)
+            except Exception:
+                logging.getLogger(__name__).exception("Chat stream: частичный ответ не сохранён")
+                return None
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={
             "Cache-Control": "no-store", "X-Accel-Buffering": "no",
@@ -546,6 +594,15 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         require_conversation(conversationId)
         return engine.preview(q, conversationId, cloudMode)
 
+    @app.post("/api/memory/recall/{trace_id}/feedback")
+    def recall_memory_feedback(trace_id: str, body: RecallFeedbackInput):
+        try:
+            return engine.recall_feedback(trace_id, body.memoryId, body.helpful)
+        except LookupError as exc:
+            raise HTTPException(404, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(404, detail=str(exc)) from None
+
     @app.get("/api/memory/usage")
     def memory_usage():
         return {"entries": engine.usage()}
@@ -622,6 +679,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             return engine.set_policy(updates)
         except ValueError as exc:
             raise HTTPException(422,detail=str(exc)) from None
+
+    @app.get("/api/memory/cloud-brains")
+    def memory_cloud_brains():
+        return {"brains": engine.cloud_brains(), "enabled": engine.policy()["allow_cloud_facts"]}
+
+    @app.put("/api/memory/cloud-brains")
+    def update_memory_cloud_brains(body: CloudBrainsInput):
+        try:
+            brains=engine.set_cloud_brains(body.brains)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
+        return {"brains": brains, "enabled": engine.policy()["allow_cloud_facts"]}
 
     @app.post("/api/memory/process")
     def run_local_memory_jobs():

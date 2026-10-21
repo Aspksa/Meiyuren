@@ -156,7 +156,12 @@ def test_interrupted_stream_keeps_payment_guard(client, monkeypatch):
     with client.stream("POST", "/api/chat/stream", json=data) as second:
         repeated = second.read().decode()
     assert "event: error" in repeated
-    assert client.get("/api/chat/messages").json()["messages"] == []
+    # Уже полученная (и, возможно, оплаченная) часть ответа не теряется,
+    # но помечена как прерванная; повтор с тем же ID её не дублирует.
+    rows = client.get("/api/chat/messages").json()["messages"]
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    assert rows[0]["text"] == "Прошу ответ"
+    assert rows[1]["text"].startswith("Начало") and "частичный ответ" in rows[1]["text"]
 
 
 def test_cross_site_mutation_of_conversations_rejected(client):

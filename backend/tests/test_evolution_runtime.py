@@ -6,13 +6,13 @@ from backend.app import cognitive_evolution as lab
 from backend.app.evolution_runtime import EvolutionRuntime
 
 
-def test_evolution_default_off_and_no_fixtures(tmp_path):
+def test_evolution_default_on_and_no_fixtures(tmp_path):
     runtime = EvolutionRuntime(tmp_path / "lab.sqlite3")
-    assert runtime.status()["automaticEvaluationEnabled"] is False
+    assert runtime.status()["automaticEvaluationEnabled"] is True
+    assert runtime.tick()["reason"] == "insufficient_independent_fixtures"
+    assert runtime.set_enabled(False)["automaticEvaluationEnabled"] is False
     assert runtime.tick()["reason"] == "disabled"
     assert runtime.tick(manual=True)["reason"] == "insufficient_independent_fixtures"
-    assert runtime.set_enabled(True)["automaticEvaluationEnabled"] is True
-    assert runtime.tick()["reason"] == "insufficient_independent_fixtures"
 
 
 def test_evaluation_requires_fixture_threshold_and_respects_interval(tmp_path):
@@ -38,7 +38,7 @@ def test_api_routes_are_protected_and_read_only_status(tmp_path, monkeypatch):
     with TestClient(create_app(tmp_path / "app.sqlite3")) as client:
         status = client.get("/api/evolution/status")
         assert status.status_code == 200
-        assert status.json()["automaticEvaluationEnabled"] is False
+        assert status.json()["automaticEvaluationEnabled"] is True
         assert client.post("/api/evolution/automatic?enabled=true").status_code == 403
         assert client.post("/api/evolution/automatic?enabled=true",
                            headers={"X-Meiyuren-Client": "1"}).status_code == 200

@@ -212,3 +212,42 @@ def complete_cloud_exchange(path, request_id, conv_id, user_text, answer, expect
                 raise RuntimeError("Cloud-запрос не может быть завершён повторно")
             conn.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now,conv_id))
     return dict(user=user,assistant=assistant)
+
+
+def save_interrupted_exchange(path, request_id, conv_id, user_text, partial, note, expected_epoch=None):
+    """Сохранить реплику и уже полученную часть ответа, если поток Cloud.ru оборвался.
+
+    Запрос остаётся в состоянии unknown: повтор с тем же ID по-прежнему не оплачивается.
+    """
+    now=int(time.time()*1000)
+    user=dict(id=uuid.uuid4().hex,role="user",text=user_text,sentAt=now)
+    assistant=dict(id=uuid.uuid4().hex,role="assistant",
+                   text=(partial.rstrip()+"\n\n["+note+"]")[:8200],sentAt=now+1)
+    with closing(connection(path)) as conn:
+        with conn:
+            if expected_epoch is not None:
+                row=conn.execute("SELECT generation FROM conversations WHERE id=?", (conv_id,)).fetchone()
+                if row is None or row["generation"] != expected_epoch:
+                    return None
+            conn.executemany(
+                "INSERT INTO messages(id,role,text,sent_at,conversation_id) VALUES(?,?,?,?,?)",
+                [(r["id"],r["role"],r["text"],r["sentAt"],conv_id) for r in (user,assistant)])
+            conn.execute(
+                "UPDATE cloud_requests SET state='unknown',user_message_id=?,assistant_message_id=? "
+                "WHERE request_id=? AND state='pending'",(user["id"],assistant["id"],request_id))
+            conn.execute("UPDATE conversations SET updated_at=? WHERE id=?",(now,conv_id))
+    return dict(user=user,assistant=assistant,interrupted=True)
+
+
+def messages_before(path, conv_id, before_id, limit=100):
+    """Страница истории старше сообщения before_id (для «Показать ранее»)."""
+    with closing(connection(path)) as conn:
+        anchor=conn.execute("SELECT rowid FROM messages WHERE id=? AND conversation_id=?",
+                            (before_id,conv_id)).fetchone()
+        if anchor is None:
+            return []
+        rows=conn.execute(
+            "SELECT id,role,text,sent_at FROM (SELECT rowid,id,role,text,sent_at FROM messages "
+            "WHERE conversation_id=? AND rowid<? ORDER BY rowid DESC LIMIT ?) ORDER BY rowid",
+            (conv_id,anchor["rowid"],limit)).fetchall()
+    return [dict(id=r["id"],role=r["role"],text=r["text"],sentAt=r["sent_at"]) for r in rows]

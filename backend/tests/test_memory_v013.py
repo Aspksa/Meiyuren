@@ -117,6 +117,8 @@ def test_local_cloud_permissions_apply_to_episode_and_checkpoint_context(app):
     public=manual(client,"Я разрабатываю проект PublicApp","projects",True)
     assert client.get("/api/memory/episodes",params={"cloudMode":True}).json()["count"]==0
     client.put("/api/memory/policy",json={"allow_cloud_facts":True})
+    # Пользователь закрыл для Cloud.ru всю область проектов.
+    assert client.put("/api/memory/cloud-brains",json={"brains":{"projects":False}}).status_code==200
     out=client.get("/api/memory/episodes",params={"cloudMode":True}).json()
     assert not out["episodes"]
     assert {x["memoryId"] for x in out["checkpoints"]}=={public["id"]}
@@ -213,3 +215,19 @@ def test_long_history_10000_messages_source_grounded_and_bounded(tmp_path):
     assert view["count"]>=2
     assert engine.deep_recall("Изучаю SQL часть 22","main",False)
     assert perf_counter()-start<45  # CI regression guard, not production SLA.
+
+
+def test_cloud_brain_consent_shares_safe_auto_facts_without_per_fact_clicks(app):
+    client,_=app
+    say(client,"Я разрабатываю проект Kitsune")
+    say(client,"Мне нравится зелёный чай")
+    assert client.get("/api/memory/recall",params={"q":"проект Kitsune","cloudMode":True}).json()["context"]==""
+    client.put("/api/memory/policy",json={"allow_cloud_facts":True})
+    brains=client.get("/api/memory/cloud-brains").json()["brains"]
+    assert brains["projects"] is True and brains["identity"] is False
+    assert "Kitsune" in client.get("/api/memory/recall",params={
+        "q":"проект Kitsune","cloudMode":True}).json()["context"]
+    # Личные предпочтения (identity) остаются локальными по умолчанию.
+    assert "чай" not in client.get("/api/memory/recall",params={
+        "q":"зелёный чай","cloudMode":True}).json()["context"]
+    assert client.put("/api/memory/cloud-brains",json={"brains":{"bogus":True}}).status_code==422
