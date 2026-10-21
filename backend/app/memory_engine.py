@@ -2279,6 +2279,25 @@ class MemoryEngine:
                 seen.add(item["id"])
         return selections
 
+    def neural_feedback(self, left_id: str, right_id: str, helpful: bool,
+                        conversation_id: str) -> dict:
+        """Explicit local feedback for a live, source-backed cross-brain link."""
+        visible = {r["id"]: r for r in
+                   self._visible_deep_rows(conversation_id, False)
+                   if r.get("sourceMessageId") and r.get("brain") in BRAINS}
+        if left_id not in visible or right_id not in visible:
+            raise ValueError("Both memories must be visible and source-backed")
+        if visible[left_id]["brain"] == visible[right_id]["brain"]:
+            raise ValueError("Feedback requires a cross-brain link")
+        cortex = NeuralCortex(Node(id=r["id"], brain=r["brain"],
+                                   text=r["content"], source=r["sourceMessageId"])
+                              for r in visible.values())
+        if right_id not in cortex.edges.get(left_id, {}):
+            raise ValueError("No current evidence-backed link")
+        adjustment = SynapticStore(self.path).feedback(
+            left_id, right_id, helpful, eligible=set(cortex.nodes))
+        return {"adjustment": adjustment, "helpful": helpful}
+
     def deep_overview(self,conversation_id: str,cloud_mode: bool=False) -> dict:
         """Хронология, состояния проектов и уровни деталей, всегда из живых записей."""
         rows=self._visible_deep_rows(conversation_id,cloud_mode)
