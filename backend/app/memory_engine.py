@@ -870,6 +870,23 @@ class MemoryEngine:
             out.append(self._item(row))
             if len(out)>=5:
                 break
+        # Повторяющиеся темы сами помогают recall, в пределах трёх ветвей.
+        if len(out)<5:
+            seen={item["id"] for item in out}
+            matching=[
+                node for node in self.branch_tree()["branches"]
+                if node["depth"]>0 and node["term"] in words
+            ]
+            matching.sort(key=lambda node:(-node["depth"],-node["support"]))
+            for branch in matching[:3]:
+                for neighbor in self.branch_facts(branch["id"],conversation_id,cloud_mode):
+                    if neighbor["id"] not in seen:
+                        seen.add(neighbor["id"])
+                        out.append(neighbor)
+                    if len(out)>=5:
+                        break
+                if len(out)>=5:
+                    break
         # Один переход по проверенным локальным связям. Не обходим весь граф.
         if out and len(out)<5:
             seen={item["id"] for item in out}
