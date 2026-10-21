@@ -614,56 +614,117 @@ class MemoryEngine:
         return done
 
     def _extract(self,message_id: str,conversation_id: str) -> None:
+        """Без запросов к LLM: автоматически сохранять только явные безопасные утверждения.
+
+        Пользователь не получает очередь предложений при auto_growth=True.
+        Сомнительные/чувствительные данные не записываются в память вообще.
+        Облачная передача ВСЕГДА запрещена для автоматически созданных записей.
+        """
+        policy=self.policy()
+        autonomous=policy["auto_growth"]
+        changed=False
         with closing(db.connection(self.path)) as conn:
-            msg=conn.execute("SELECT text FROM messages WHERE id=? AND role='user' AND conversation_id=?",
-                             (message_id,conversation_id)).fetchone()
-            if not msg:
-                return
-            text=msg["text"].strip()
-            if SECRET.search(text):
-                return
-            explicit=EXPLICIT.match(text)
-            implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
-            candidate=(explicit or implicit)
-            if not candidate:
-                return
-            content=(candidate.group(1) if explicit else text).strip().rstrip(".")
-            if not 4<=len(content)<=400 or SECRET.search(content):
-                return
-            fingerprint=digest(content)
-            if conn.execute("SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)).fetchone():
-                return
-            if conn.execute("SELECT 1 FROM memory_items WHERE fingerprint=? AND status='confirmed'",
-                            (fingerprint,)).fetchone():
-                return
-            if conn.execute("SELECT 1 FROM memory_candidates WHERE fingerprint=? AND status='pending'",
-                            (fingerprint,)).fetchone():
-                return
-            # Конфликт признаём только при явном совпадении темы и противоположной полярности.
-            new_topic=preference_topic(content)
-            conflict_with=None
-            if new_topic:
-                existing=conn.execute(
-                    "SELECT id,content FROM memory_items WHERE status='confirmed' "
-                    "AND (conversation_id='global' OR conversation_id=?)",(conversation_id,)
-                ).fetchall()
-                for item in existing:
-                    old_topic=preference_topic(item["content"])
-                    if old_topic and old_topic[0]==new_topic[0] and old_topic[1]!=new_topic[1]:
-                        conflict_with=item["id"]
-                        break
             with conn:
-                if not conn.execute(
-                    "SELECT 1 FROM messages WHERE id=? AND conversation_id=?",
+                msg=conn.execute(
+                    "SELECT text FROM messages WHERE id=? AND role='user' AND conversation_id=?",
                     (message_id,conversation_id)
+                ).fetchone()
+                if not msg:
+                    return
+                text=msg["text"].strip()
+                if not text or len(text)>600 or SECRET.search(text) or AUTO_PRIVATE.search(text):
+                    return
+                explicit=EXPLICIT.match(text)
+                implicit=PREFERENCE.match(text) or NEGATIVE_PREFERENCE.match(text)
+                direct=AUTO_DIRECT.match(text)
+                if not (explicit or implicit or direct):
+                    return
+                # Пересказ, цитата, вопрос или предположение — не прямой факт пользователя.
+                if "?" in text or text.lstrip().startswith(("«",'"',">")):
+                    return
+                content=(explicit.group(1) if explicit else text).strip().rstrip(".")
+                if not 4<=len(content)<=400 or SECRET.search(content) or AUTO_PRIVATE.search(content):
+                    return
+                fingerprint=digest(content)
+                if conn.execute(
+                    "SELECT 1 FROM memory_tombstones WHERE fingerprint=?",(fingerprint,)
                 ).fetchone():
-                    return  # история уже очищена, задача больше неактуальна
+                    return
+                if conn.execute(
+                    "SELECT 1 FROM memory_excluded_sources WHERE source_message_id=?",(message_id,)
+                ).fetchone():
+                    return
+                if conn.execute(
+                    "SELECT 1 FROM memory_items WHERE source_message_id=? OR "
+                    "(fingerprint=? AND status='confirmed')",
+                    (message_id,fingerprint)
+                ).fetchone():
+                    return
+                # Определяем противоречие только в узкой проверяемой форме предпочтения.
+                topic=preference_topic(content)
+                conflict_id=None
+                if topic:
+                    previous=conn.execute(
+                        "SELECT id,content FROM memory_items WHERE status='confirmed' "
+                        "AND (conversation_id='global' OR conversation_id=?)",
+                        (conversation_id,)
+                    ).fetchall()
+                    for item in previous:
+                        old=preference_topic(item["content"])
+                        if old and old[0]==topic[0] and old[1]!=topic[1]:
+                            conflict_id=item["id"]
+                            break
+                if not autonomous:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO memory_candidates "
+                        "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
+                        "VALUES(?,?,?,?,?,'pending',?,?,?)",
+                        (str(uuid.uuid4()),content,fingerprint,message_id,
+                         conversation_id,now(),conflict_id,classify_brain(content))
+                    )
+                    return
+                item_id=str(uuid.uuid4())
+                ts=now()
+                # Под одной транзакцией — факт, источник, история, FTS5 и граф.
                 conn.execute(
-                    "INSERT OR IGNORE INTO memory_candidates "
-                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
-                    "VALUES(?,?,?,?,?,'pending',?,?,?)",
-                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with,
-                     classify_brain(content)))
+                    "INSERT INTO memory_items "
+                    "(id,content,fingerprint,kind,status,source_message_id,"
+                    "conversation_id,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'auto','confirmed',?,?,0,?,?,?)",
+                    (item_id,content,fingerprint,message_id,conversation_id,
+                     ts,ts,classify_brain(content))
+                )
+                conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",
+                             (item_id,content))
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                             (str(uuid.uuid4()),item_id,1,"auto_saved",content,ts))
+                self._link_local(conn,item_id,content)
+                if conflict_id:
+                    old=conn.execute(
+                        "SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
+                        (conflict_id,)
+                    ).fetchone()
+                    if old:
+                        opposite=preference_topic(old["content"])
+                        if opposite and topic and opposite[0]==topic[0] and opposite[1]!=topic[1]:
+                            conn.execute(
+                                "UPDATE memory_items SET status='superseded',cloud_allowed=0,"
+                                "superseded_by=?,updated_at=? WHERE id=?",
+                                (item_id,ts,conflict_id)
+                            )
+                            conn.execute("DELETE FROM memory_fts WHERE item_id=?",(conflict_id,))
+                            conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                         (conflict_id,conflict_id))
+                            conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(conflict_id,))
+                            conn.execute("DELETE FROM memory_summaries")
+                # Очередь прежних предложений для того же источника больше не нужна.
+                conn.execute(
+                    "UPDATE memory_candidates SET status='approved' WHERE source_message_id=? "
+                    "AND status='pending'",(message_id,)
+                )
+                changed=True
+        if changed:
+            self.grow_branches()
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
