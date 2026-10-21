@@ -1862,6 +1862,47 @@ class MemoryEngine:
                     "SELECT COUNT(*) FROM memory_links WHERE relation='shared_topic'"
                 ).fetchone()[0]
 
+    def neural_universe_graph(self, limit: int=180) -> dict:
+        """Bounded source-backed graph and event history; no memory content exposed."""
+        cap=max(1,min(limit,300))
+        stamp=now()
+        with closing(db.connection(self.path)) as conn:
+            facts=conn.execute(
+                "SELECT id,brain,created_at,updated_at FROM memory_items "
+                "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?) "
+                "ORDER BY updated_at DESC LIMIT ?",(stamp,cap)
+            ).fetchall()
+            allowed={r["id"] for r in facts}
+            nodes=[{"id":r["id"],"brain":r["brain"],"createdAt":r["created_at"]}
+                   for r in facts if r["brain"] in BRAINS]
+            links=conn.execute(
+                "SELECT left_id,right_id,relation,weight,updated_at FROM memory_links "
+                "ORDER BY updated_at DESC LIMIT 1000"
+            ).fetchall()
+            edges=[{"source":r["left_id"],"target":r["right_id"],
+                    "relation":r["relation"],"weight":r["weight"]}
+                   for r in links if r["left_id"] in allowed and r["right_id"] in allowed]
+            revisions=conn.execute(
+                "SELECT r.memory_id,r.action,r.created_at FROM memory_revisions r "
+                "JOIN memory_items m ON m.id=r.memory_id "
+                "WHERE m.status='confirmed' AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY r.created_at DESC LIMIT 60",(stamp,)
+            ).fetchall()
+            recalls=conn.execute(
+                "SELECT l.memory_id,l.created_at FROM memory_recall_log l "
+                "JOIN memory_items m ON m.id=l.memory_id "
+                "WHERE m.status='confirmed' AND (m.expires_at IS NULL OR m.expires_at>?) "
+                "ORDER BY l.created_at DESC LIMIT 60",(stamp,)
+            ).fetchall()
+        events=([{"kind":"revision","nodeId":r["memory_id"],"action":r["action"],
+                  "timestamp":r["created_at"]} for r in revisions]
+                +[{"kind":"recall","nodeId":r["memory_id"],"action":"recall",
+                   "timestamp":r["created_at"]} for r in recalls])
+        events.sort(key=lambda item:item["timestamp"],reverse=True)
+        return {"nodes":nodes,"edges":edges,"events":events[:80],
+                "truncated":len(facts)==cap,"source":"local_sqlite",
+                "privateContentExposed":False}
+
     def brains(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             rows=conn.execute(
