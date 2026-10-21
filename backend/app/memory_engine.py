@@ -283,12 +283,15 @@ class MemoryEngine:
                     expiresAt=row["expires_at"],revision=row["revision"],status=row["status"],
                     supersededBy=row["superseded_by"],brain=row["brain"])
 
-    def add_manual(self, content: str, *, cloud_allowed: bool=False) -> dict:
+    def add_manual(self, content: str, *, cloud_allowed: bool=False, brain: str | None=None) -> dict:
         content=content.strip()
         if not 1<=len(content)<=500:
             raise ValueError("Факт должен содержать от 1 до 500 символов.")
         if SECRET.search(content):
             raise ValueError("Похоже на секрет или персональный идентификатор. Не сохраняйте его в память.")
+        if brain is not None and brain not in BRAINS:
+            raise ValueError("Неизвестная область памяти.")
+        brain=brain or classify_brain(content)
         ts=now()
         item_id=str(uuid.uuid4())
         with closing(db.connection(self.path)) as conn:
@@ -298,16 +301,19 @@ class MemoryEngine:
                     "INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                     (str(uuid.uuid4()),item_id,1,"created",content,ts))
                 conn.execute(
-                    "INSERT INTO memory_items(id,content,fingerprint,kind,status,cloud_allowed,created_at,updated_at) "
-                    "VALUES(?,?,?,'manual','confirmed',?,?,?)",
-                    (item_id,content,digest(content),int(cloud_allowed),ts,ts))
+                    "INSERT INTO memory_items(id,content,fingerprint,kind,status,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'manual','confirmed',?,?,?,?)",
+                    (item_id,content,digest(content),int(cloud_allowed),ts,ts,brain))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
+                self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         return self._item(row)
 
     def edit(self, item_id: str, *, content: str, cloud_allowed: bool, revision: int,
-             expires_at: int | None = None) -> dict | None:
+             expires_at: int | None = None, brain: str | None=None) -> dict | None:
         content=content.strip()
+        if brain is not None and brain not in BRAINS:
+            raise ValueError("Неизвестная область памяти.")
         if not 1<=len(content)<=500 or SECRET.search(content):
             raise ValueError("Недопустимое содержание воспоминания.")
         with closing(db.connection(self.path)) as conn:
@@ -322,12 +328,17 @@ class MemoryEngine:
                                  (old["fingerprint"],now()))
                 conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
                              (str(uuid.uuid4()),item_id,revision+1,"edited",content,now()))
+                if digest(old["content"])!=digest(content) or (old["cloud_allowed"] and not cloud_allowed):
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item_id,))
+                conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(item_id,item_id))
                 conn.execute("DELETE FROM memory_fts WHERE item_id=?",(item_id,))
                 conn.execute(
                     "UPDATE memory_items SET content=?,fingerprint=?,cloud_allowed=?,expires_at=?,"
-                    "updated_at=?,revision=revision+1 WHERE id=?",
-                    (content,digest(content),int(cloud_allowed),expires_at,now(),item_id))
+                    "brain=?,updated_at=?,revision=revision+1 WHERE id=?",
+                    (content,digest(content),int(cloud_allowed),expires_at,
+                     brain or old["brain"],now(),item_id))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,content))
+                self._link_local(conn,item_id,content)
                 row=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
         return self._item(row)
 
@@ -360,6 +371,8 @@ class MemoryEngine:
                     conn.execute("INSERT OR IGNORE INTO memory_tombstones VALUES(?,?)",
                                  (old["fingerprint"],now()))
                     conn.execute("DELETE FROM memory_fts WHERE item_id=?",(target,))
+                    conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",(target,target))
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(target,))
                     conn.execute("DELETE FROM memory_facts WHERE id=?",(target,))
                     conn.execute("DELETE FROM memory_revisions WHERE memory_id=?",(target,))
                     conn.execute("DELETE FROM memory_recall_log WHERE memory_id=?",(target,))
@@ -399,7 +412,7 @@ class MemoryEngine:
                               "ORDER BY created_at DESC LIMIT 100").fetchall()
         return [dict(id=r["id"],content=r["content"],sourceMessageId=r["source_message_id"],
                      conversationId=r["conversation_id"],createdAt=r["created_at"],
-                     conflictWith=r["conflict_with"]) for r in rows]
+                     conflictWith=r["conflict_with"],brain=r["brain"]) for r in rows]
 
     def review(self,candidate_id: str,approve: bool,cloud_allowed: bool=False) -> dict | None:
         with closing(db.connection(self.path)) as conn:
@@ -418,12 +431,13 @@ class MemoryEngine:
                 item_id=str(uuid.uuid4())
                 conn.execute(
                     "INSERT INTO memory_items(id,content,fingerprint,kind,status,source_message_id,"
-                    "conversation_id,cloud_allowed,created_at,updated_at) "
-                    "VALUES(?,?,?,'extracted','confirmed',?,?,?,?,?)",
+                    "conversation_id,cloud_allowed,created_at,updated_at,brain) "
+                    "VALUES(?,?,?,'extracted','confirmed',?,?,?,?,?,?)",
                     (item_id,row["content"],row["fingerprint"],row["source_message_id"],
-                     row["conversation_id"],int(cloud_allowed),now(),now()))
+                     row["conversation_id"],int(cloud_allowed),now(),now(),row["brain"]))
                 conn.execute("INSERT INTO memory_fts(item_id,content) VALUES(?,?)",(item_id,row["content"]))
-                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)",
+                self._link_local(conn,item_id,row["content"])
+                conn.execute("INSERT INTO memory_revisions VALUES(?,?,?,?,?,?)"
                              (str(uuid.uuid4()),item_id,1,"approved",row["content"],now()))
                 if row["conflict_with"]:
                     previous=conn.execute("SELECT id,content FROM memory_items WHERE id=? AND status='confirmed'",
@@ -437,6 +451,9 @@ class MemoryEngine:
                                 "superseded_by=?,updated_at=? WHERE id=?",
                                 (item_id,now(),previous["id"]))
                             conn.execute("DELETE FROM memory_fts WHERE item_id=?",(previous["id"],))
+                            conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                         (previous["id"],previous["id"]))
+                            conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(previous["id"],))
                             conn.execute("DELETE FROM memory_summaries")
                 conn.execute("UPDATE memory_candidates SET status='approved' WHERE id=?",(candidate_id,))
                 item=conn.execute("SELECT * FROM memory_items WHERE id=?",(item_id,)).fetchone()
@@ -550,9 +567,10 @@ class MemoryEngine:
                     return  # история уже очищена, задача больше неактуальна
                 conn.execute(
                     "INSERT OR IGNORE INTO memory_candidates "
-                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with) "
-                    "VALUES(?,?,?,?,?,'pending',?,?)",
-                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with))
+                    "(id,content,fingerprint,source_message_id,conversation_id,status,created_at,conflict_with,brain) "
+                    "VALUES(?,?,?,?,?,'pending',?,?,?)",
+                    (str(uuid.uuid4()),content,fingerprint,message_id,conversation_id,now(),conflict_with,
+                     classify_brain(content)))
 
     def _summarize(self,conversation_id: str,source_id: str) -> None:
         """Только безопасная выписка подтверждённых фактов с существующими источниками.
@@ -638,6 +656,10 @@ class MemoryEngine:
                              "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
                 conn.execute("DELETE FROM memory_recall_log WHERE memory_id IN "
                              "(SELECT id FROM memory_items WHERE conversation_id=?)",(conversation_id,))
+                for item in ids:
+                    conn.execute("DELETE FROM memory_links WHERE left_id=? OR right_id=?",
+                                 (item["id"],item["id"]))
+                    conn.execute("DELETE FROM memory_vectors WHERE item_id=?",(item["id"],))
                 conn.execute("DELETE FROM memory_items WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_candidates WHERE conversation_id=?",(conversation_id,))
                 conn.execute("DELETE FROM memory_summaries WHERE conversation_id=?",(conversation_id,))
