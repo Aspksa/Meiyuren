@@ -403,6 +403,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     def memory_usage():
         return {"entries": engine.usage()}
 
+    @app.post("/api/memory/brains/rebuild")
+    def rebuild_brain_links():
+        return {"links":engine.rebuild_links()}
+
     @app.get("/api/memory/brains")
     def memory_brains():
         return engine.brains()
