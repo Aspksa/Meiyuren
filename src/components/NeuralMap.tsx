@@ -48,8 +48,11 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
   const halo = compact ? 78 : 72;
 
   // Раскладка считается по всему графу, чтобы фильтры и время не перетасовывали узлы.
+  // Периодическое обновление приносит новый объект графа; раскладку пересчитываем, только если изменились узлы или связи.
+  const layoutKey = graph ? graph.nodes.map(n => n.id).join(',') + '|' +
+    graph.edges.filter(e => e.relation === 'cortex').map(e => `${e.source}-${e.target}-${e.weight}`).join(',') : '';
   const placed = useMemo(() => layoutGraph(graph?.nodes ?? [],
-    (graph?.edges ?? []).filter(e => e.relation === 'cortex'), W, H), [graph, W, H]);
+    (graph?.edges ?? []).filter(e => e.relation === 'cortex'), W, H), [layoutKey, W, H]);
   const placedRef = useRef(placed);
   placedRef.current = placed;
 
