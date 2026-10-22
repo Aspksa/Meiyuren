@@ -213,9 +213,15 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
   useEffect(() => { dreamMotion.current?.beginElement(); }, [dream]);
 
   const toLocal = (event: ReactPointerEvent<SVGSVGElement> | ReactWheelEvent<SVGSVGElement>) => {
+    // Через матрицу экрана: учитывает поля по краям, когда пропорции окна и карты не совпадают.
+    const matrix = event.currentTarget.getScreenCTM();
+    if (matrix) {
+      const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(matrix.inverse());
+      return { x: point.x, y: point.y };
+    }
     const box = event.currentTarget.getBoundingClientRect();
     const scale = Math.max(W / box.width, H / box.height);
-    return { x: (event.clientX - box.left) * scale, y: (event.clientY - box.top) * scale };
+    return { x: (event.clientX - box.left) * scale - (box.width * scale - W) / 2, y: (event.clientY - box.top) * scale - (box.height * scale - H) / 2 };
   };
   const zoom = (factor: number, cx = W / 2, cy = H / 2) => setView(v => {
     const k = Math.max(0.6, Math.min(4, v.k * factor));

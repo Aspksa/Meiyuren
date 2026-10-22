@@ -3084,7 +3084,9 @@ class MemoryEngine:
                 (now(),)).fetchone()
             vectors = (conn.execute("SELECT COUNT(*),MAX(updated_at) FROM memory_semantic_vectors")
                        .fetchone() if semantic_on else (0, 0))
-        signature = (tuple(facts), tuple(vectors), semantic_on)
+        # Выученные веса тоже в подписи: 👍/👎 меняют отбор связей под лимит степени.
+        learned = SynapticStore(self.path).learned()
+        signature = (tuple(facts), tuple(vectors), semantic_on, hash(frozenset(learned.items())))
         with self._cortex_lock:
             cached = self._cortex_cache
             if cached is None or cached[0] != signature:
@@ -3095,7 +3097,7 @@ class MemoryEngine:
                     (Node(id=r["id"], brain=r["brain"], text=r["content"],
                           source=r["sourceMessageId"], scope=r["scope"]) for r in rows),
                     vectors={i: meaning[i] for i in (r["id"] for r in rows) if i in meaning},
-                    learned=SynapticStore(self.path).learned())
+                    learned=learned)
                 self._cortex_cache = cached = (signature, cortex)
             cortex = cached[1]
             SynapticStore(self.path).apply(cortex, eligible=set(cortex.nodes))

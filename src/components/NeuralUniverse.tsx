@@ -100,11 +100,23 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     if (!selected) { setCard(null); setCardError(''); return; }
     const controller = new AbortController();
     setCardError('');
+    // Карточка прежнего факта не остаётся рядом с новым, пока грузится новая.
+    setCard(previous => previous?.item.id === selected ? previous : null);
     void getNodeCard(selected, controller.signal).then(setCard).catch(cause => {
       if (!controller.signal.aborted) { setCard(null); setCardError(cause instanceof Error ? cause.message : 'Факт недоступен'); }
     });
     return () => controller.abort();
   }, [selected]);
+
+  // Факт изменили (например, пока панель была закрыта): перечитываем карточку.
+  const selectedUpdatedAt = graph?.nodes.find(n => n.id === selected)?.updatedAt;
+  const cardUpdatedAt = card?.item.id === selected ? card.item.updatedAt : undefined;
+  useEffect(() => {
+    if (!selected || selectedUpdatedAt === undefined || cardUpdatedAt === undefined || selectedUpdatedAt === cardUpdatedAt) return;
+    const controller = new AbortController();
+    void getNodeCard(selected, controller.signal).then(setCard).catch(() => undefined);
+    return () => controller.abort();
+  }, [selected, selectedUpdatedAt, cardUpdatedAt]);
 
   // Факт пропал с карты: проверяем, жив ли он (он может быть просто вне 300 показанных), и закрываем карточку, если забыт.
   useEffect(() => {
@@ -148,7 +160,7 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
   const toggle = <T,>(set: Set<T>, value: T) => { const next = new Set(set); if (next.has(value)) next.delete(value); else next.add(value); return next; };
   const openOnMap = (id: string) => { setTab('map'); setSelected(id); };
   const vote = async (other: string, helpful: boolean) => {
-    if (!card) return;
+    if (!card || card.item.id !== selected) return;
     setVoting(other + helpful);
     try {
       await sendSynapseFeedback(card.item.id, other, helpful);
@@ -230,7 +242,7 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
           <p className="neural-universe__muted">Колёсико мыши меняет масштаб, перетаскивание сдвигает карту.</p>
         </div>}
         {selected && cardError && <p className="neural-universe__error">{cardError}</p>}
-        {selected && card && <>
+        {selected && card?.item.id === selected && <>
           <div className="neural-universe__card-head">
             <span className="neural-universe__brain-tag" style={{ ['--chip' as string]: brainColor(card.item.brain) }}><i />{brainName(card.item.brain)}</span>
             <button type="button" className="icon-button" onClick={() => setSelected('')} aria-label="Закрыть карточку факта">×</button>

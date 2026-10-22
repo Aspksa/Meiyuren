@@ -194,3 +194,14 @@ def test_learned_weight_survives_degree_limit(monkeypatch):
     assert "liked" in learned.edges["hub"]
     # Сырой вес ребра остаётся честным: обучение добавляется только через feedback.
     assert learned.edges["hub"]["liked"] < NeuralCortex(nodes).edges["hub"]["strong"]
+
+
+def test_feedback_rebuilds_cached_cortex(app):
+    client, path = app
+    seed_facts(client, path, [("p", "projects", "Meiyuren Python SQLite интерфейс"),
+                              ("k", "knowledge", "Meiyuren Python SQLite графы")])
+    engine = MemoryEngine(path)
+    first = engine.neural_cortex()
+    assert engine.neural_cortex() is first
+    client.post("/api/memory/universe/synapses", json={"leftId": "p", "rightId": "k", "helpful": False})
+    assert engine.neural_cortex() is not first
