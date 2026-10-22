@@ -3094,7 +3094,8 @@ class MemoryEngine:
                 cortex = NeuralCortex(
                     (Node(id=r["id"], brain=r["brain"], text=r["content"],
                           source=r["sourceMessageId"], scope=r["scope"]) for r in rows),
-                    vectors={i: meaning[i] for i in (r["id"] for r in rows) if i in meaning})
+                    vectors={i: meaning[i] for i in (r["id"] for r in rows) if i in meaning},
+                    learned=SynapticStore(self.path).learned())
                 self._cortex_cache = cached = (signature, cortex)
             cortex = cached[1]
             SynapticStore(self.path).apply(cortex, eligible=set(cortex.nodes))

@@ -64,12 +64,9 @@ class SynapticStore:
                      (row[2] if row else 0)+int(not helpful),int(time.time())))
         return new
 
-    def apply(self, cortex, *, eligible: set[str]) -> int:
-        """Load learned weights into a cortex.
-
-        Оценки связи (👍/👎 на ребре) и оценки факта в «Глубокой памяти»
-        (memory_synaptic_weights) складываются: обучение одной системы видно другой.
-        """
+    def learned(self) -> dict[tuple[str,str],float]:
+        """Оценки связи (👍/👎 на ребре) и оценки факта в «Глубокой памяти»
+        (memory_synaptic_weights) складываются: обучение одной системы видно другой."""
         merged: dict[tuple[str,str],float]={}
         with closing(self._open()) as conn:
             rows=conn.execute("SELECT left_id,right_id,adjustment FROM neural_synapse_feedback").fetchall()
@@ -79,10 +76,14 @@ class SynapticStore:
         for a,b,adjustment in rows:
             pair=tuple(sorted((a,b)))
             merged[pair]=merged.get(pair,0.0)+float(adjustment)
+        return {pair:max(-MAX_ADJUSTMENT,min(MAX_ADJUSTMENT,v)) for pair,v in merged.items() if v}
+
+    def apply(self, cortex, *, eligible: set[str]) -> int:
+        """Load learned weights into a cortex."""
         fresh={}
-        for (a,b),adjustment in merged.items():
-            if a in eligible and b in eligible and b in cortex.edges.get(a,{}) and adjustment:
-                fresh[(a,b)]=max(-MAX_ADJUSTMENT,min(MAX_ADJUSTMENT,adjustment))
+        for (a,b),adjustment in self.learned().items():
+            if a in eligible and b in eligible and b in cortex.edges.get(a,{}):
+                fresh[(a,b)]=adjustment
         cortex.feedback=fresh
         return len(fresh)
 

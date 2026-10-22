@@ -53,7 +53,8 @@ class NeuralCortex:
     """Associative index. Does not bypass Memory Core visibility."""
 
     def __init__(self, nodes: Iterable[Node],
-                 vectors: Mapping[str, Sequence[float]] | None = None):
+                 vectors: Mapping[str, Sequence[float]] | None = None,
+                 learned: Mapping[tuple[str, str], float] | None = None):
         # Порядок вызывающего сохраняется при обрезке: Memory Core передаёт свежие факты первыми.
         kept: dict[str, Node] = {}
         for node in nodes:
@@ -65,7 +66,7 @@ class NeuralCortex:
         self.edges: dict[str, dict[str, float]] = defaultdict(dict)
         self.evidence: dict[tuple[str, str], dict] = {}
         self.feedback: dict[tuple[str, str], float] = {}
-        self._build(vectors or {})
+        self._build(vectors or {}, learned or {})
 
     def _linkable(self, a: Node, b: Node) -> bool:
         return a.brain != b.brain and (a.scope == b.scope or
@@ -105,7 +106,8 @@ class NeuralCortex:
                 result[(left, right)] = float(numpy.dot(vectors[left], vectors[right]))
         return result
 
-    def _build(self, vectors: Mapping[str, Sequence[float]]) -> None:
+    def _build(self, vectors: Mapping[str, Sequence[float]],
+               learned: Mapping[tuple[str, str], float]) -> None:
         token_sets = {id_: stems(node.text) for id_, node in self.nodes.items()}
         frequency = Counter(t for ts in token_sets.values() for t in ts)
         postings: dict[str, list[str]] = defaultdict(list)
@@ -143,9 +145,11 @@ class NeuralCortex:
                 weight = 0.6 * close + 0.4 * lex
             else:
                 kind, weight = "lexical", lex
-            proposals.append((-round(weight, 6), left, right, kind, common, close))
+            # Выученный вес участвует в отборе: 👍 не теряется из-за лимита степени.
+            rank = weight + learned.get(pair, 0.0)
+            proposals.append((-round(rank, 6), -round(weight, 6), left, right, kind, common, close))
         count = 0
-        for neg, left, right, kind, common, close in sorted(proposals):
+        for _, neg, left, right, kind, common, close in sorted(proposals):
             if count >= MAX_EDGES:
                 break
             if len(self.edges[left]) >= MAX_DEGREE or len(self.edges[right]) >= MAX_DEGREE:

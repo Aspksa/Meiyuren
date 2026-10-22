@@ -182,3 +182,15 @@ def test_snapshots_list_without_saving(app):
     client, _ = app
     assert client.get("/api/memory/universe/snapshots?save=false").json()["snapshots"] == []
     assert len(client.get("/api/memory/universe/snapshots").json()["snapshots"]) == 1
+
+
+def test_learned_weight_survives_degree_limit(monkeypatch):
+    monkeypatch.setattr("backend.app.neural_cortex.MAX_DEGREE", 1)
+    nodes = [Node("hub", "projects", "Meiyuren Python SQLite React", "m1"),
+             Node("strong", "knowledge", "Meiyuren Python SQLite React", "m2"),
+             Node("liked", "goals", "Meiyuren Python отпуск", "m3")]
+    assert "liked" not in NeuralCortex(nodes).edges["hub"]
+    learned = NeuralCortex(nodes, learned={("hub", "liked"): 0.3})
+    assert "liked" in learned.edges["hub"]
+    # Сырой вес ребра остаётся честным: обучение добавляется только через feedback.
+    assert learned.edges["hub"]["liked"] < NeuralCortex(nodes).edges["hub"]["strong"]
