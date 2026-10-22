@@ -1,21 +1,204 @@
-.neural-universe{position:fixed;z-index:40;top:5vh;left:calc(var(--sidebar-width,76px) + 38px);right:3vw;bottom:5vh;overflow:auto;background:radial-gradient(ellipse at 48% 45%,#14214b 0%,#080f29 65%,#050b1b 100%);border:1px solid #4567a577;border-radius:22px;box-shadow:0 20px 90px #000b,0 0 30px #527df52a;color:#ecf3ff;padding:26px;font-family:inherit}
-.neural-universe__head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid #7b9cff33;padding-bottom:18px}
-.neural-universe__head small,.neural-universe__detail small{color:#81afff;letter-spacing:.24em;font-size:11px}
-.neural-universe__head h2{font-size:32px;letter-spacing:.03em;margin:8px 0;color:#fff}.neural-universe__head h2 span{font-size:14px;color:#98b8ff;margin-left:10px}
-.neural-universe__head p{margin:0;color:#9cacd0}.neural-universe__head button{background:#172750;border:1px solid #6696ff77;border-radius:14px;color:#fff;font-size:28px;width:45px;height:45px;cursor:pointer}
-.neural-universe__stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:19px 0}
-.neural-universe__metric{background:#0c1a39b3;border:1px solid #5978c044;border-radius:15px;padding:15px;min-width:0}.neural-universe__metric span{display:block;font-size:12px;color:#a3bbde}.neural-universe__metric strong{font-size:29px;display:block;margin-top:7px;color:#9de7ff;font-variant-numeric:tabular-nums}
-.neural-universe__body{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(220px,1fr);gap:16px}
-.neural-universe__map{background:radial-gradient(circle at center,#29377088,#090f2688 65%);border:1px solid #688cea3b;border-radius:16px;overflow:hidden}
-.neural-universe__map svg{display:block;width:100%;max-height:59vh}.neural-universe__map p{text-align:center;margin:0 12px 15px;font-size:11px;color:#aac0db}
-.neural-universe__detail{background:#0d1735b7;border:1px solid #688cea44;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:12px}
-.neural-universe__detail h3{font-size:25px;margin:0;color:#fff}.neural-universe__detail>strong{font-size:58px;color:#9fe8ff;font-variant-numeric:tabular-nums;line-height:1}.neural-universe__detail>span{color:#b5c9eb}
-.neural-universe__detail p{color:#a9bbda;line-height:1.6;font-size:13px;margin:0}.neural-universe__detail code{color:#b8e7ff}
-.neural-universe__detail .neural-universe__note{margin-top:auto;border-top:1px solid #5772ba55;padding-top:17px;font-size:12px}
-.neural-universe__bar{height:6px;border-radius:20px;background:#273659;overflow:hidden}.neural-universe__bar i{display:block;background:linear-gradient(90deg,#7581ff,#60ecff);height:100%;border-radius:20px;transition:width .5s}
-.neural-universe__error{color:#ffd0d0;background:#8a2b3355;padding:10px 14px;border-radius:10px}
-@media(max-width:860px){.neural-universe{left:76px;right:8px;top:10px;bottom:10px;padding:15px}.neural-universe__stats{grid-template-columns:repeat(2,minmax(0,1fr))}.neural-universe__body{grid-template-columns:1fr}.neural-universe__head h2{font-size:24px}}
+/* Нейросеть в общей теме приложения: ночное золото, стекло, тёплые цвета мозгов. */
+.neural-universe {
+  position: fixed; z-index: 66; top: 14px; bottom: 14px; left: 98px; right: 14px;
+  display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 18px 22px 22px;
+  color: var(--ivory); border: 1px solid #edc38a54; border-radius: 22px;
+  background: radial-gradient(ellipse 60% 50% at 55% 40%, #2a1f1199, transparent 70%), linear-gradient(160deg, #241b10f7, #120d08fb);
+  box-shadow: 0 30px 90px #000000db, 0 0 0 1px #ffffff0a inset; backdrop-filter: blur(18px);
+  scrollbar-color: #6b5530 transparent; animation: panel-in .18s ease-out;
+}
+.neural-universe > * { flex-shrink: 0; }
+.neural-universe button { font: inherit; color: inherit; cursor: pointer; }
+.neural-universe button:disabled { cursor: progress; opacity: .55; }
+.neural-universe__muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
-.neural-universe__tabs{display:flex;flex-wrap:wrap;gap:9px;margin:14px 0}.neural-universe__tabs button{background:#142347;color:#b8d0fa;border:1px solid #5978b066;padding:10px 18px;border-radius:13px;cursor:pointer}.neural-universe__tabs .is-active{background:#284776;color:white;border-color:#90ccff}.neural-universe__ledger{overflow:auto;max-height:52vh;background:#08142d;border:1px solid #5474bb66;border-radius:15px;padding:22px}.neural-universe__ledger h3{margin-top:0}.neural-universe__ledger p{border-bottom:1px solid #4c629344;padding:9px 0;color:#b7cdf0;word-break:break-word}
+.neural-universe__head { display: flex; align-items: center; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.neural-universe__mark { display: grid; place-items: center; width: 42px; height: 42px; flex: none; border-radius: 50%; border: 1px solid var(--line-strong); color: var(--gold); background: radial-gradient(circle, #e7bf6226, transparent 70%); font-size: 18px; }
+.neural-universe__title { flex: 1; min-width: 0; }
+.neural-universe__title small { display: block; color: var(--gold-deep); font-size: 10px; letter-spacing: .24em; text-transform: uppercase; }
+.neural-universe__title h2 { margin: 4px 0 0; font: 400 28px/1.1 Georgia, serif; color: var(--ivory); }
+.neural-universe__pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: #fbf3e408; color: var(--ivory-dim); font-size: 12px; white-space: nowrap; }
+.neural-universe__pill i { width: 7px; height: 7px; border-radius: 50%; background: #a6d48c; box-shadow: 0 0 10px #a6d48c; }
+.neural-universe__pill.is-warning i { background: #ef7b7b; box-shadow: 0 0 10px #ef7b7b; }
 
-.neural-space{padding:12px;background:#080f25;border:1px solid #5879c755;border-radius:16px}.neural-space svg{width:100%;height:min(52vh,600px)}.neural-space p,.neural-space small{color:#b4c9ed}.neural-space__controls,.neural-universe__spatial-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:10px 0}.neural-space__controls button,.neural-universe__spatial-actions button{border:1px solid #719add99;border-radius:9px;background:#213968;color:#e8f3ff;padding:9px 14px;cursor:pointer}.neural-universe__spatial-actions label{display:flex;flex-direction:column;gap:5px;color:#a9c8ee;flex:1}.neural-universe__spatial-actions input{accent-color:#7dd7ff}
+.neural-universe__metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.neural-universe__metric { padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: #fbf3e406; min-width: 0; }
+.neural-universe__metric strong { display: block; font: 400 26px/1.1 Georgia, serif; color: var(--gold-soft); font-variant-numeric: tabular-nums; }
+.neural-universe__metric span { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); letter-spacing: .03em; }
+.neural-universe__error { margin: 0; padding: 10px 14px; border-radius: 12px; background: #8a2b3340; border: 1px solid #ef7b7b55; color: #ffd8d0; font-size: 13px; }
+
+.neural-universe__tabs { display: flex; gap: 4px; padding: 4px; border-radius: 14px; border: 1px solid var(--line); background: #0d0a0780; align-self: flex-start; }
+.neural-universe__tabs button { border: 0; background: transparent; padding: 8px 16px; border-radius: 10px; font-size: 13px; color: var(--ivory-dim); }
+.neural-universe__tabs button:hover { color: var(--ivory); }
+.neural-universe__tabs button.is-active { background: linear-gradient(114deg, #ffe6b9, #dbb279); color: #271c13; }
+
+/* Карта */
+.neural-universe__map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; flex: 1 0 auto; }
+.neural-universe__canvas { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.neural-universe__filters { display: flex; flex-direction: column; gap: 8px; }
+.neural-universe__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.neural-universe__chips button { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: #fbf3e406; font-size: 12px; color: var(--ivory-dim); transition: opacity .15s, border-color .15s; }
+.neural-universe__chips button i { width: 8px; height: 8px; border-radius: 50%; background: var(--chip); box-shadow: 0 0 8px var(--chip); }
+.neural-universe__chips button[aria-pressed="false"] { opacity: .4; }
+.neural-universe__chips button:hover { border-color: var(--line-strong); }
+.neural-universe__chips button span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.neural-universe__swatch { display: inline-block; width: 18px; height: 0; border-top: 2px solid; flex: none; }
+.neural-universe__swatch--both { border-color: #e2c98f; border-top-width: 3px; }
+.neural-universe__swatch--semantic { border-color: #e2c98f; border-top-width: 2px; }
+.neural-universe__swatch--lexical { border-color: #e2c98f; border-top-width: 1px; }
+.neural-universe__swatch--other { border-color: #e2c98f; border-top-width: 1px; opacity: .5; }
+
+.neural-map { position: relative; border-radius: 18px; border: 1px solid var(--line); background: radial-gradient(ellipse at center, #1e170dcc, #0d0a07f0 75%); overflow: hidden; }
+.neural-map svg { display: block; width: 100%; height: clamp(280px, calc(100svh - 430px), 760px); touch-action: none; user-select: none; }
+.neural-map__orbit { stroke: #e7bf62; stroke-opacity: .12; stroke-dasharray: 3 9; }
+.neural-map__brain text { font-size: 15px; letter-spacing: .06em; }
+.neural-map__count { fill: var(--muted); font-size: 12px; }
+.neural-map__edge { fill: none; stroke: #e2c98f; stroke-linecap: round; transition: opacity .25s, stroke-width .25s; }
+.neural-map__edge.is-lit { stroke: #f6e3b4; }
+.neural-map__edge.is-learned { stroke: #f6e3b4; }
+.neural-map__edge.is-weakened { stroke: #b98a7a; }
+.neural-map__node { cursor: pointer; transition: opacity .2s; outline: none; }
+.neural-map__node:focus-visible circle:last-child { stroke: var(--gold-soft); stroke-width: 3; }
+.neural-map__empty { fill: var(--ivory-dim); font-size: 17px; }
+.neural-map--compact .neural-map__brain text { font-size: 25px; }
+.neural-map--compact .neural-map__count { font-size: 20px; }
+.neural-map--compact .neural-map__empty { font-size: 26px; }
+.neural-map__zoom { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+.neural-map__zoom button { width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--line); background: #17110bd9; color: var(--ivory-dim); font-size: 16px; }
+.neural-map__zoom button:hover { border-color: var(--line-strong); color: var(--gold-soft); }
+
+.neural-universe__timeline { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
+.neural-universe__timeline label { flex: 1; display: flex; align-items: center; gap: 14px; }
+.neural-universe__play { flex: none; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line-strong); background: radial-gradient(circle, #e7bf6230, #e7bf6208); color: var(--gold-soft); font-size: 12px; box-shadow: 0 0 14px #e7bf6222; }
+.neural-universe__play:hover { box-shadow: 0 0 20px #e7bf6255; }
+.neural-universe__timeline span { white-space: nowrap; }
+.neural-universe__timeline strong { color: var(--ivory-dim); font-weight: 500; }
+.neural-universe__timeline input { flex: 1; accent-color: var(--gold); }
+.neural-universe__hint { margin: 0; font-size: 11px; color: var(--muted); }
+
+.neural-universe__card { border-radius: 18px; border: 1px solid var(--line); background: #0d0a0799; padding: 16px; overflow-y: auto; max-height: calc(100svh - 290px); }
+.neural-universe__card h3 { margin: 0 0 10px; font: 400 19px Georgia, serif; color: var(--gold-soft); }
+.neural-universe__card p { margin: 0 0 10px; color: var(--ivory-dim); font-size: 13px; line-height: 1.6; }
+.neural-universe__card-head { display: flex; justify-content: space-between; align-items: center; }
+.neural-universe__card blockquote { margin: 12px 0 6px; font: 400 18px/1.45 Georgia, serif; color: var(--ivory); }
+.neural-universe__card h4 { margin: 18px 0 8px; font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--gold-deep); }
+.neural-universe__card h4 span { color: var(--muted); margin-left: 6px; }
+.neural-universe__brain-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .06em; color: var(--chip, var(--ivory-dim)); }
+.neural-universe__brain-tag i { width: 7px; height: 7px; border-radius: 50%; background: var(--chip, var(--gold)); box-shadow: 0 0 8px var(--chip, var(--gold)); }
+.neural-universe__links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.neural-universe__links li { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: #fbf3e405; }
+.neural-universe__link-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 100%; border: 0; background: none; padding: 0; text-align: left; font-size: 13px; line-height: 1.5; color: var(--ivory); }
+.neural-universe__link-text:hover { color: var(--gold-soft); }
+.neural-universe__why { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.neural-universe__strength { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.neural-universe__strength meter { flex: 1; height: 6px; min-width: 40px; }
+.neural-universe__strength button { width: 30px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: #fbf3e408; font-size: 13px; }
+.neural-universe__strength button:hover:not(:disabled) { border-color: var(--line-strong); background: #e7bf621a; }
+.neural-universe meter::-webkit-meter-bar { background: #3a2d1b; border: 0; border-radius: 9px; height: 6px; }
+.neural-universe meter::-webkit-meter-optimum-value { background: linear-gradient(90deg, #b98a32, #f3d891); border-radius: 9px; }
+.neural-universe meter::-moz-meter-bar { background: linear-gradient(90deg, #b98a32, #f3d891); border-radius: 9px; }
+
+/* Эффекты: дыхание, рождение, импульсы, вспышки. */
+.neural-map__dot { transform-box: fill-box; transform-origin: center; animation: nm-breathe 4.2s ease-in-out infinite; }
+.neural-map__fresh { stroke-width: 1.4; transform-box: fill-box; transform-origin: center; animation: nm-fresh 2.8s ease-in-out infinite; }
+.neural-map__ripple { stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: nm-ripple 1.8s ease-out infinite; pointer-events: none; }
+.neural-map__node.is-born { transform-box: fill-box; transform-origin: center; animation: nm-born 1.1s cubic-bezier(.2,1.4,.4,1) both; }
+.neural-map__pulse { fill: #fff3d2; filter: drop-shadow(0 0 2px #e7bf62); pointer-events: none; }
+.neural-map__edge.is-flash-up { animation: nm-flash-up 1.4s ease-out; }
+.neural-map__edge.is-flash-down { animation: nm-flash-down 1.4s ease-out forwards; }
+.neural-map__sparks circle { fill: #ef9b7b; animation: nm-spark 1s ease-out forwards; }
+/* Туманности, созвездия, звёзды, глубина и сон. */
+.neural-map .neural-map__sky { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; max-height: none; pointer-events: none; transition: opacity 2.4s ease; }
+.neural-map > svg:not(.neural-map__sky) { position: relative; }
+.neural-map.is-asleep .neural-map__sky { opacity: .5; }
+.neural-map__sign { font-size: 46px; opacity: .16; pointer-events: none; }
+.neural-map--compact .neural-map__sign { font-size: 70px; }
+.neural-map__label-sign { opacity: .85; }
+.neural-map__constellations line { stroke: #e2c98f; stroke-opacity: .28; stroke-linecap: round; transition: opacity .2s; }
+.neural-map__stars circle { fill: #fbf3e4; opacity: .4; }
+.neural-map__stars circle.is-twinkle { animation: nm-twinkle 5s ease-in-out infinite; }
+.neural-map__night { fill: #050302; opacity: 0; transition: opacity 2.4s ease; }
+.neural-map.is-asleep .neural-map__night { opacity: .5; }
+.neural-map.is-asleep .neural-map__dot { animation-duration: 9s; }
+.neural-map.is-asleep .neural-map__pulse, .neural-map.is-asleep .neural-map__ripple { display: none; }
+.neural-map__dream-trail { fill: none; stroke: #e2c98f; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: nm-dream 2.6s ease-in-out forwards; }
+.neural-map__dream-spark { fill: #fff3d2; filter: drop-shadow(0 0 3px #e7bf62); }
+.neural-map__sleep { position: absolute; left: 14px; top: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: #17110bd9; color: var(--ivory-dim); font-size: 12px; letter-spacing: .04em; white-space: nowrap; opacity: 0; transform: translateY(-4px); transition: opacity 1.6s, transform 1.6s; pointer-events: none; }
+.neural-map.is-asleep .neural-map__sleep { opacity: 1; transform: none; }
+@keyframes nm-twinkle { 0%, 100% { opacity: .15; } 50% { opacity: .8; } }
+@keyframes nm-dream { 0% { stroke-dashoffset: 1; opacity: 0; } 15% { opacity: .9; } 70% { stroke-dashoffset: 0; opacity: .8; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+@keyframes nm-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+@keyframes nm-fresh { 0%, 100% { opacity: .15; transform: scale(.9); } 50% { opacity: .7; transform: scale(1.15); } }
+@keyframes nm-ripple { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(3); } }
+@keyframes nm-born { 0% { opacity: 0; transform: scale(0); filter: brightness(3); } 60% { opacity: 1; transform: scale(1.5); filter: brightness(2); } 100% { transform: scale(1); filter: none; } }
+@keyframes nm-flash-up { 0% { stroke: #fff6dc; stroke-width: 5; filter: drop-shadow(0 0 4px #e7bf62); } 100% { filter: none; } }
+@keyframes nm-flash-down { 0% { stroke: #ef7b7b; } 100% { stroke-opacity: .25; } }
+@keyframes nm-spark { from { opacity: 1; transform: translate(0, 0); } to { opacity: 0; transform: translate(var(--dx), var(--dy)); } }
+
+/* Мозги */
+.neural-universe__brains { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.neural-universe__brain { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px; text-align: left; border-radius: 16px; border: 1px solid var(--line); background: linear-gradient(160deg, color-mix(in srgb, var(--chip) 9%, transparent), #fbf3e404); transition: border-color .15s, transform .15s; }
+.neural-universe__brain:hover { border-color: var(--chip); transform: translateY(-1px); }
+.neural-universe__brain strong { font: 400 34px/1 Georgia, serif; color: var(--ivory); }
+.neural-universe__brain small { color: var(--muted); font-size: 11px; }
+.neural-universe__bar { display: block; width: 100%; height: 5px; border-radius: 9px; background: #3a2d1b; overflow: hidden; }
+.neural-universe__bar i { display: block; height: 100%; border-radius: 9px; background: linear-gradient(90deg, var(--chip, #b98a32), var(--gold-soft)); transition: width .5s; }
+.neural-universe__pairs { grid-column: 1 / -1; padding: 16px; border-radius: 16px; border: 1px solid var(--line); background: #0d0a0780; }
+.neural-universe__pairs h3, .neural-universe__panels h3, .neural-universe__journal h3 { margin: 0 0 12px; font: 400 18px Georgia, serif; color: var(--gold-soft); }
+.neural-universe__pairs p:not(.neural-universe__muted) { display: flex; gap: 8px; align-items: center; margin: 0; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.neural-universe__pairs p strong { margin-left: auto; color: var(--ivory-dim); font-variant-numeric: tabular-nums; }
+
+/* Обучение */
+.neural-universe__panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.neural-universe__panels article { padding: 18px; border-radius: 16px; border: 1px solid var(--line); background: #0d0a0780; }
+.neural-universe__panels p { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--ivory-dim); }
+.neural-universe__panels dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0; }
+.neural-universe__panels dl div { padding: 10px; border-radius: 12px; background: #fbf3e406; border: 1px solid var(--line); }
+.neural-universe__panels dt { font-size: 11px; color: var(--muted); }
+.neural-universe__panels dd { margin: 4px 0 0; font: 400 22px Georgia, serif; color: var(--gold-soft); }
+.neural-universe__big { font: 400 40px/1.1 Georgia, serif !important; color: var(--gold-soft) !important; }
+.neural-universe__big span { display: block; margin-top: 6px; font: 12px/1.5 Inter, sans-serif; color: var(--muted); }
+.neural-universe__trials { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.neural-universe__trials li { display: grid; grid-template-columns: 1fr 70px 36px; gap: 8px; align-items: center; color: var(--ivory-dim); }
+.neural-universe__trials li.is-selected span { color: var(--gold-soft); }
+.neural-universe__trials b { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Журнал */
+.neural-universe__journal { padding: 18px; border-radius: 16px; border: 1px solid var(--line); background: #0d0a0780; }
+.neural-universe__journal-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.neural-universe__journal-head h3 { flex: 1; margin: 0; }
+.neural-universe__journal-head button, .neural-universe__journal li button { padding: 6px 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: #f0d09d0e; color: var(--gold-soft); font-size: 12px; }
+.neural-universe__journal ol { list-style: none; margin: 12px 0 0; padding: 0; }
+.neural-universe__journal li { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ivory-dim); flex-wrap: wrap; }
+.neural-universe__journal time { width: 120px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.neural-universe__journal li button { margin-left: auto; }
+
+@media (max-width: 1100px) {
+  .neural-universe__map-layout { grid-template-columns: 1fr; }
+  .neural-universe__card { max-height: none; }
+  .neural-universe__panels { grid-template-columns: 1fr; }
+  .neural-universe__brains { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .neural-universe { left: 64px; top: 8px; right: 8px; bottom: 8px; padding: 14px; gap: 12px; }
+  .neural-universe__metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .neural-universe__metric { padding: 8px 10px; }
+  .neural-universe__metric strong { font-size: 20px; }
+  .neural-universe__metric span { font-size: 10px; }
+  .neural-universe__chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -14px; padding-inline: 14px; }
+  .neural-universe__chips button { flex: none; }
+  .neural-universe__pill { display: none; }
+  .neural-universe__title h2 { font-size: 23px; }
+  .neural-universe__tabs { align-self: stretch; }
+  .neural-universe__tabs button { flex: 1; padding: 8px 6px; }
+  .neural-map svg { height: auto; aspect-ratio: 600 / 860; max-height: 70svh; }
+  .neural-universe__timeline label { flex-direction: column; align-items: stretch; gap: 6px; }
+  .neural-universe__journal time { width: auto; }
+}
+@media (max-width: 600px) { .neural-map__sleep span { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .neural-universe { animation: none; }
+  .neural-map__dot, .neural-map__fresh, .neural-map__ripple, .neural-map__node.is-born, .neural-map__sky, .neural-map__stars circle.is-twinkle,
+  .neural-map__edge.is-flash-up, .neural-map__edge.is-flash-down { animation: none; }
+  .neural-universe__brain, .neural-map__edge, .neural-map__node, .neural-map__night, .neural-map__sleep { transition: none; }
+}

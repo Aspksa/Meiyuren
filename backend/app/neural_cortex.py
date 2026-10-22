@@ -1,14 +1,22 @@
-"""Neural Cortex 2.0: source-preserving, bounded associative graph.
+"""Neural Cortex 3.0: source-preserving, bounded associative graph.
 
-No new user facts are inferred. Similarity is lexical/topic-based; it is not
-causal reasoning or embedding-based semantic understanding.
+No new user facts are inferred. An edge joins two facts from different brains
+when they share at least two informative words, or when the local meaning
+model (semantic.py) finds them close. Edges are associative evidence, not
+causal reasoning.
 """
 from __future__ import annotations
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+import heapq
 from math import log
-from typing import Iterable
+from typing import Iterable, Mapping, Sequence
 from .cognitive_evolution import terms, BRAINS
+
+try:  # numpy приходит вместе с fastembed; без него смысл считается только для лексических пар.
+    import numpy
+except ImportError:  # pragma: no cover - зависит от окружения
+    numpy = None
 
 
 def stems(text: str) -> set[str]:
@@ -16,9 +24,16 @@ def stems(text: str) -> set[str]:
     from .memory_engine import search_stem
     return {search_stem(t) for t in terms(text)}
 
-MAX_NODES = 600
-MAX_EDGES = 1200
+MAX_NODES = 1500
+MAX_EDGES = 3000
 MAX_DEGREE = 12
+LEXICAL_MIN = 0.08
+# Строже, чем порог поиска semantic.MATCH: ребро без общих слов должно быть заметно ближе.
+SEMANTIC_MIN = 0.6
+# Слова, встречающиеся в большой доле фактов, не создают рёбер: иначе получаются клики.
+COMMON_SHARE = 0.25
+# Сколько ближайших по смыслу соседей рассматривать на факт до отбора рёбер.
+TOP_MEANING = MAX_DEGREE * 2
 
 @dataclass(frozen=True)
 class Node:
@@ -35,42 +50,117 @@ class Node:
 
 
 class NeuralCortex:
-    """Ephemeral associative index. Does not bypass Memory Core visibility."""
+    """Associative index. Does not bypass Memory Core visibility."""
 
-    def __init__(self, nodes: Iterable[Node]):
-        accepted = [n for n in nodes if n.valid()]
-        self.nodes = {n.id: n for n in sorted(accepted, key=lambda n: n.id)[:MAX_NODES]}
+    def __init__(self, nodes: Iterable[Node],
+                 vectors: Mapping[str, Sequence[float]] | None = None,
+                 learned: Mapping[tuple[str, str], float] | None = None):
+        # Порядок вызывающего сохраняется при обрезке: Memory Core передаёт свежие факты первыми.
+        kept: dict[str, Node] = {}
+        for node in nodes:
+            if node.valid() and node.id not in kept:
+                kept[node.id] = node
+                if len(kept) >= MAX_NODES:
+                    break
+        self.nodes = {id_: kept[id_] for id_ in sorted(kept)}
         self.edges: dict[str, dict[str, float]] = defaultdict(dict)
+        self.evidence: dict[tuple[str, str], dict] = {}
         self.feedback: dict[tuple[str, str], float] = {}
-        self._build()
+        self._build(vectors or {}, learned or {})
 
-    def _build(self) -> None:
+    def _linkable(self, a: Node, b: Node) -> bool:
+        return a.brain != b.brain and (a.scope == b.scope or
+                                       a.scope == "global" or b.scope == "global")
+
+    def _meaning(self, vectors: Mapping[str, Sequence[float]],
+                 lexical: dict[tuple[str, str], tuple]) -> dict[tuple[str, str], float]:
+        ids = [i for i in self.nodes if i in vectors]
+        if len(ids) < 2:
+            return {}
+        result: dict[tuple[str, str], float] = {}
+        if numpy is None:
+            for pair in lexical:
+                if pair[0] in vectors and pair[1] in vectors:
+                    result[pair] = sum(x * y for x, y in zip(vectors[pair[0]], vectors[pair[1]]))
+            return result
+        matrix = numpy.asarray([vectors[i] for i in ids], dtype=numpy.float32)
+        scores = matrix @ matrix.T
+        numpy.fill_diagonal(scores, -1.0)
+        # Пары, которые связать нельзя (один мозг, разные диалоги), не занимают места в top-k.
+        brains = numpy.asarray([self.nodes[i].brain for i in ids])
+        scopes = numpy.asarray([self.nodes[i].scope for i in ids])
+        local = scopes != "global"
+        apart = (scopes[:, None] != scopes[None, :]) & local[:, None] & local[None, :]
+        scores[(brains[:, None] == brains[None, :]) | apart] = -1.0
+        # Не больше TOP_MEANING кандидатов на факт: даже 1500 похожих фактов не дают миллион пар.
+        top = min(TOP_MEANING, len(ids) - 1)
+        best = numpy.argpartition(-scores, top - 1, axis=1)[:, :top]
+        for r in range(len(ids)):
+            for c in best[r].tolist():
+                value = float(scores[r, c])
+                if value >= SEMANTIC_MIN:
+                    pair = (ids[r], ids[c]) if ids[r] < ids[c] else (ids[c], ids[r])
+                    result[pair] = value
+        for left, right in lexical:
+            if (left, right) not in result and left in vectors and right in vectors:
+                result[(left, right)] = float(numpy.dot(vectors[left], vectors[right]))
+        return result
+
+    def _build(self, vectors: Mapping[str, Sequence[float]],
+               learned: Mapping[tuple[str, str], float]) -> None:
         token_sets = {id_: stems(node.text) for id_, node in self.nodes.items()}
         frequency = Counter(t for ts in token_sets.values() for t in ts)
+        postings: dict[str, list[str]] = defaultdict(list)
+        common_limit = max(24, int(len(self.nodes) * COMMON_SHARE))
+        for id_ in self.nodes:
+            for token in token_sets[id_]:
+                postings[token].append(id_)
+        shared: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for token, ids in postings.items():
+            if len(ids) < 2 or len(ids) > common_limit:
+                continue
+            for i, left in enumerate(ids):
+                for right in ids[i + 1:]:
+                    shared[(left, right)].append(token)
+        lexical: dict[tuple[str, str], tuple] = {}
+        for (left, right), common in shared.items():
+            if len(common) < 2 or not self._linkable(self.nodes[left], self.nodes[right]):
+                continue
+            informative = sum(1 / (1 + log(1 + frequency[t])) for t in common)
+            # Нормировка по меньшему факту: длинные факты тоже связываются.
+            smaller = min(len(token_sets[left]), len(token_sets[right]))
+            value = informative / max(1, smaller)
+            if value >= LEXICAL_MIN:
+                lexical[(left, right)] = (value, sorted(common))
+        meaning = self._meaning(vectors, lexical)
         proposals = []
-        keys = sorted(self.nodes)
-        for i, left in enumerate(keys):
-            a = self.nodes[left]
-            for right in keys[i + 1:]:
-                b = self.nodes[right]
-                if a.brain == b.brain or not (a.scope == b.scope or
-                        a.scope == "global" or b.scope == "global"):
-                    continue
-                common = token_sets[left] & token_sets[right]
-                if len(common) < 2:
-                    continue
-                informative = sum(1 / (1 + log(1 + frequency[t])) for t in common)
-                union = token_sets[left] | token_sets[right]
-                value = informative / max(1, len(union))
-                if value >= 0.08:
-                    proposals.append((-value, left, right))
-        for neg, left, right in sorted(proposals):
-            if sum(len(v) for v in self.edges.values()) // 2 >= MAX_EDGES:
+        for pair in set(lexical) | {p for p, v in meaning.items() if v >= SEMANTIC_MIN}:
+            left, right = pair
+            if not self._linkable(self.nodes[left], self.nodes[right]):
+                continue
+            lex, common = lexical.get(pair, (0.0, []))
+            close = meaning.get(pair)
+            if close is not None and close >= SEMANTIC_MIN:
+                kind = "both" if lex else "semantic"
+                weight = 0.6 * close + 0.4 * lex
+            else:
+                kind, weight = "lexical", lex
+            # Выученный вес участвует в отборе: 👍 не теряется из-за лимита степени.
+            rank = weight + learned.get(pair, 0.0)
+            proposals.append((-round(rank, 6), -round(weight, 6), left, right, kind, common, close))
+        count = 0
+        for _, neg, left, right, kind, common, close in sorted(proposals):
+            if count >= MAX_EDGES:
                 break
             if len(self.edges[left]) >= MAX_DEGREE or len(self.edges[right]) >= MAX_DEGREE:
                 continue
             self.edges[left][right] = -neg
             self.edges[right][left] = -neg
+            self.evidence[(left, right)] = {
+                "kind": kind, "terms": common[:6],
+                "meaning": round(close, 3) if close is not None else None,
+            }
+            count += 1
 
     def adjust(self, left: str, right: str, helpful: bool) -> bool:
         if right not in self.edges.get(left, {}):
@@ -80,41 +170,61 @@ class NeuralCortex:
         self.feedback[pair] = max(-0.3, min(0.3, previous + (0.05 if helpful else -0.05)))
         return True
 
+    def weight(self, left: str, right: str) -> float:
+        raw = self.edges.get(left, {}).get(right)
+        if raw is None:
+            return 0.0
+        return max(0.0, min(1.0, raw + self.feedback.get(tuple(sorted((left, right))), 0.0)))
+
     def recall(self, seed: str, scope: str, *, depth: int = 3,
-               limit: int = 12, budget: int = 80) -> list[dict]:
+               limit: int = 12, budget: int = 80,
+               allowed: set[str] | None = None) -> list[dict]:
+        """Best-first walk: each fact is reached by its strongest path, never through hidden ones."""
         if seed not in self.nodes or depth < 1 or limit < 1:
             return []
         if self.nodes[seed].scope not in ("global", scope):
             return []
-        queue = deque([(seed, 0, 1.0)])
-        visited = {seed}
+        if allowed is not None and seed not in allowed:
+            return []
+        cap, spend, max_depth = min(limit, 32), min(budget, 200), min(depth, 4)
+        heap = [(-1.0, 0, seed, "")]
+        # Состояние — узел и число шагов: короткий, но чуть более слабый путь
+        # ещё может дотянуться до соседей, недоступных длинному сильному пути.
+        best = {(seed, 0): 1.0}
+        done: set[tuple[str, int]] = set()
+        reported = {seed}
         results = []
         expanded = 0
-        while queue and len(results) < min(limit, 32) and expanded < min(budget, 200):
-            source, hop, strength = queue.popleft()
-            if hop >= min(depth, 4):
+        while heap and len(results) < cap and expanded < spend:
+            neg, hop, source, via = heapq.heappop(heap)
+            if (source, hop) in done or any((source, h) in done for h in range(hop)):
                 continue
-            for target, raw in sorted(self.edges.get(source, {}).items(),
-                                      key=lambda v: -v[1]):
+            done.add((source, hop))
+            if source not in reported:
+                reported.add(source)
+                pair = tuple(sorted((via, source)))
+                results.append({"id": source, "brain": self.nodes[source].brain,
+                                "source": self.nodes[source].source,
+                                "score": round(-neg, 5), "hops": hop, "via": via,
+                                "kind": self.evidence.get(pair, {}).get("kind", "lexical")})
+            if hop >= max_depth:
+                continue
+            for target in self.edges.get(source, {}):
                 expanded += 1
-                if expanded > min(budget, 200):
+                if expanded > spend:
                     break
-                if target in visited or self.nodes[target].scope not in ("global", scope):
+                if target == seed or self.nodes[target].scope not in ("global", scope):
                     continue
-                visited.add(target)
-                adjustment = self.feedback.get(tuple(sorted((source, target))), 0)
-                score = strength * max(0.0, min(1.0, raw + adjustment)) * (0.85 ** hop)
-                if score <= 0:
+                if allowed is not None and target not in allowed:
                     continue
-                results.append({"id": target, "brain": self.nodes[target].brain,
-                                "source": self.nodes[target].source,
-                                "score": round(score, 5), "hops": hop + 1})
-                queue.append((target, hop + 1, score))
-                if len(results) >= min(limit, 32):
-                    break
+                score = -neg * self.weight(source, target) * (0.85 ** hop)
+                if score <= 0 or score <= best.get((target, hop + 1), 0.0):
+                    continue
+                best[(target, hop + 1)] = score
+                heapq.heappush(heap, (-score, hop + 1, target, source))
         return results
 
-    def prune(self, minimum: float = 0.08) -> int:
+    def prune(self, minimum: float = LEXICAL_MIN) -> int:
         removed = 0
         for left in list(self.edges):
             for right, raw in list(self.edges[left].items()):
@@ -125,10 +235,28 @@ class NeuralCortex:
                     self.edges[left].pop(right, None)
                     self.edges[right].pop(left, None)
                     self.feedback.pop(pair, None)
+                    self.evidence.pop(pair, None)
                     removed += 1
         return removed
 
+    def edge_list(self, allowed: set[str] | None = None, limit: int = MAX_EDGES) -> list[dict]:
+        """Рёбра для визуализации: без текста фактов, только ID, вид связи и вес."""
+        result = []
+        for (left, right), info in self.evidence.items():
+            if right not in self.edges.get(left, {}):
+                continue
+            if allowed is not None and (left not in allowed or right not in allowed):
+                continue
+            result.append({"source": left, "target": right, "kind": info["kind"],
+                           "weight": round(self.weight(left, right), 4),
+                           "adjustment": round(self.feedback.get((left, right), 0.0), 4)})
+        result.sort(key=lambda e: (-e["weight"], e["source"], e["target"]))
+        return result[:limit]
+
     def diagnostics(self) -> dict:
+        kinds = Counter(info["kind"] for info in self.evidence.values())
         return {"nodes": len(self.nodes), "edges": sum(map(len, self.edges.values())) // 2,
-                "maxDepth": 4, "maxEdges": MAX_EDGES,
-                "meaning": "lexical associative evidence, not verified causality"}
+                "lexicalEdges": kinds["lexical"], "semanticEdges": kinds["semantic"],
+                "bothEdges": kinds["both"], "learnedSynapses": sum(1 for v in self.feedback.values() if v),
+                "maxDepth": 4, "maxEdges": MAX_EDGES, "maxNodes": MAX_NODES,
+                "meaning": "associative evidence (shared words or local meaning model), not verified causality"}

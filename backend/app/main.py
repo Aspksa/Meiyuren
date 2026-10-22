@@ -85,6 +85,12 @@ class RecallFeedbackInput(BaseModel):
     helpful: bool
 
 
+class UniverseFeedbackInput(BaseModel):
+    leftId: str = Field(min_length=1,max_length=80)
+    rightId: str = Field(min_length=1,max_length=80)
+    helpful: bool
+
+
 class NeuralFeedbackInput(BaseModel):
     leftId: str = Field(min_length=1,max_length=80)
     rightId: str = Field(min_length=1,max_length=80)
@@ -166,7 +172,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             stop.set()
             await task
 
-    app = FastAPI(title="Meiyuren Local API", version="0.32.0", docs_url=None, redoc_url=None,
+    app = FastAPI(title="Meiyuren Local API", version="0.33.0", docs_url=None, redoc_url=None,
                   lifespan=lifespan)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 
@@ -723,8 +729,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return engine.universe_health()
 
     @app.get("/api/memory/universe/snapshots")
-    def universe_snapshots():
-        return engine.universe_snapshot()
+    def universe_snapshots(save: bool = True):
+        return engine.universe_snapshot(save)
 
     @app.get("/api/memory/universe/events")
     async def universe_events(request: Request):
@@ -733,12 +739,14 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             previous=None
             while not await request.is_disconnected():
                 current=engine.universe_health()
+                # checkedAt меняется каждый раз; событие шлём только при изменении самих данных.
                 payload=json.dumps(current,ensure_ascii=False,sort_keys=True)
-                if payload!=previous:
-                    yield "event: health\\ndata: "+payload+"\\n\\n"
-                    previous=payload
+                state=json.dumps({k:v for k,v in current.items() if k!="checkedAt"},ensure_ascii=False,sort_keys=True)
+                if state!=previous:
+                    yield "event: health\ndata: "+payload+"\n\n"
+                    previous=state
                 else:
-                    yield ": heartbeat\\n\\n"
+                    yield ": heartbeat\n\n"
                 await asyncio.sleep(5)
         return StreamingResponse(iterate(),media_type="text/event-stream",
                                  headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
@@ -746,6 +754,20 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.get("/api/memory/universe/graph")
     def universe_graph(limit: int = Query(default=180,ge=1,le=300)):
         return engine.neural_universe_graph(limit)
+
+    @app.get("/api/memory/universe/nodes/{item_id}")
+    def universe_node(item_id: str):
+        try:
+            return engine.universe_node(item_id)
+        except ValueError as exc:
+            raise HTTPException(404,detail=str(exc)) from None
+
+    @app.post("/api/memory/universe/synapses")
+    def universe_synapse_feedback(body: UniverseFeedbackInput):
+        try:
+            return engine.neural_feedback(body.leftId,body.rightId,body.helpful,None)
+        except ValueError as exc:
+            raise HTTPException(422,detail=str(exc)) from None
 
     @app.get("/api/memory/brains")
     def memory_brains():

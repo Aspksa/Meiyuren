@@ -26,11 +26,15 @@ def diagnostic_report(status: dict) -> str:
         lines.append(f"• {name}: подтверждённых записей {n}")
     lines.extend([
         f"Связи памяти: {network.get('links',0)}",
-        f"Нейронные векторы: {network.get('neuralVectors',0)}",
+        f"Векторы смысла (локальная модель): {network.get('semanticVectors',0)}",
+        f"Векторы Cloud.ru: {network.get('neuralVectors',0)}",
         f"Тематические ветви: {status.get('autonomousBranches',0)}",
         f"Ожидающие подтверждения: {status.get('pending',0)}",
         f"Очередь задач: {status.get('jobs',0)}",
         f"Система Cortex: {status.get('cortex',{}).get('edges',0)} связей между узлами",
+        f"Нейросеть (Cortex 3.0): {(status.get('neuralCortex') or {}).get('edges',0)} связей, из них по смыслу "
+        f"{(status.get('neuralCortex') or {}).get('semanticEdges',0)+(status.get('neuralCortex') or {}).get('bothEdges',0)}, "
+        f"выученных синапсов {(status.get('neuralCortex') or {}).get('learnedSynapses',0)}",
         f"Эволюционные оценки: {status.get('evolution',{}).get('evaluations',0)}",
     ])
     if not status.get("facts",0):
