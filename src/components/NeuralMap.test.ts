@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BRAIN_SIGNS, constellation } from './NeuralMap';
+import { BRAIN_SIGNS, arc, constellation } from './NeuralMap';
 
 describe('constellation', () => {
   it('joins every star of a brain with the shortest lines', () => {
@@ -16,5 +16,12 @@ describe('constellation', () => {
 
   it('gives every brain its own sign', () => {
     expect(new Set(Object.values(BRAIN_SIGNS)).size).toBe(8);
+  });
+});
+
+describe('arc', () => {
+  it('bends to the chosen side and ends at the target', () => {
+    expect(arc({ x: 0, y: 0 }, { x: 100, y: 0 }, 0.1, 1)).toBe('M0,0 Q50,10 100,0');
+    expect(arc({ x: 0, y: 0 }, { x: 100, y: 0 }, 0.1, -1)).toBe('M0,0 Q50,-10 100,0');
   });
 });

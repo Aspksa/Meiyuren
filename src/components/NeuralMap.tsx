@@ -50,6 +50,16 @@ export function constellation(points: { id: string; x: number; y: number }[]): [
   return lines;
 }
 
+/** Связь — плавная дуга, как нить: изгиб постоянный для пары, сторона зависит от пары. */
+export function arc(a: { x: number; y: number }, b: { x: number; y: number }, bend = 0.14, side = 1) {
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const cx = mx - (b.y - a.y) * bend * side, cy = my + (b.x - a.x) * bend * side;
+  return `M${a.x},${a.y} Q${cx},${cy} ${b.x},${b.y}`;
+}
+const sideOf = (left: string, right: string) => (hash(left < right ? left + right : right + left) & 1 ? 1 : -1);
+// Толщина различает вид связи; цвет у всех один.
+const FAMILY_WIDTH: Record<EdgeFamily, number> = { both: 1.25, semantic: 1, lexical: 0.85, other: 0.6 };
+
 /** Фоновые звёзды двух слоёв: при сдвиге и масштабе они плывут медленнее карты — так видна глубина. */
 const starfield = (W: number, H: number) => Array.from({ length: 140 }, (_, i) => {
   const h = mix(i + 1), v = mix(h);
@@ -171,7 +181,8 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
     .flatMap(e => {
       const fromSource = firing.has(e.source);
       const a = placed.get(fromSource ? e.source : e.target), b = placed.get(fromSource ? e.target : e.source);
-      return a && b ? [{ key: `${e.source}:${e.target}`, d: `M${a.x},${a.y} L${b.x},${b.y}`, delay: (hash(e.target) % 1600) / 1000 }] : [];
+      const side = sideOf(e.source, e.target) * (fromSource === (e.source < e.target) ? 1 : -1);
+      return a && b ? [{ key: `${e.source}:${e.target}`, d: arc(a, b, 0.14, side), delay: (hash(e.target) % 1600) / 1000 }] : [];
     });
   const isFlash = (e: GraphEdge) => !!flash && ((e.source === flash.a && e.target === flash.b) || (e.source === flash.b && e.target === flash.a));
   const counts = new Map<string, number>();
@@ -203,7 +214,11 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
         walk.push(options[(seed + step) % options.length]);
       }
       const points = walk.flatMap(id => { const p = placedRef.current.get(id); return p ? [p] : []; });
-      if (points.length >= 2) setDream({ key: seed, d: 'M' + points.map(p => `${p.x},${p.y}`).join(' L') });
+      if (points.length >= 2) setDream({ key: seed, d: points.slice(1).map((p, i) => {
+        const left = walk[i], right = walk[i + 1];
+        const side = sideOf(left, right) * ((left < right) ? 1 : -1);
+        return arc(points[i], p, 0.14, side).replace(i ? /^M[^Q]+/ : /$^/, '');
+      }).join(' ') });
       seed++;
     };
     tick();
@@ -228,17 +243,6 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
     return { k, x: cx - (cx - v.x) * k / v.k, y: cy - (cy - v.y) * k / v.k };
   });
 
-  // Глубина резкости: при приближении точки у краёв экрана расплываются, как вне фокуса камеры.
-  const blurOf = (id: string, p: { x: number; y: number }, z: number) => {
-    if (near.has(id)) return '';
-    let level = z < 0.28 ? 1 : 0;
-    if (view.k > 1.25) {
-      const sx = p.x * view.k + view.x, sy = p.y * view.k + view.y;
-      const off = Math.hypot((sx - W / 2) / (W / 2), (sy - H / 2) / (H / 2));
-      if (off > 0.7) level += off > 1 ? 2 : 1;
-    }
-    return level ? `url(#nmBlur${Math.min(2, level)})` : '';
-  };
   const parallax = (f: number) => `translate(${view.x * f} ${view.y * f}) translate(${W / 2} ${H / 2}) scale(${1 + (view.k - 1) * f}) translate(${-W / 2} ${-H / 2})`;
 
   return <div className={`neural-map${compact ? ' neural-map--compact' : ''}${asleep ? ' is-asleep' : ''}`}>
@@ -252,10 +256,9 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
           <feGaussianBlur stdDeviation={9 * S} />
         </filter>
         {brains.map(([id, , c]) => <radialGradient key={id} id={`nmNeb-${id}`}>
-          <stop stopColor={c} stopOpacity=".34" />
-          <stop offset=".45" stopColor={c} stopOpacity=".14" />
-          <stop offset=".7" stopColor="#b9a0f2" stopOpacity=".06" />
-          <stop offset="1" stopColor="#74c7d6" stopOpacity="0" />
+          <stop stopColor={c} stopOpacity=".11" />
+          <stop offset=".5" stopColor={c} stopOpacity=".04" />
+          <stop offset="1" stopColor={c} stopOpacity="0" />
         </radialGradient>)}
       </defs>
       {[0.25, 0.55].map((f, layer) => <g key={f} transform={parallax(f)} className="neural-map__stars">
@@ -294,10 +297,8 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
       onPointerCancel={() => { drag.current = null; }}
       style={{ cursor: drag.current?.moved ? 'grabbing' : 'grab' }}>
       <defs>
-        <radialGradient id="nmCore"><stop stopColor="#e7bf62" stopOpacity=".2" /><stop offset="1" stopColor="#e7bf62" stopOpacity="0" /></radialGradient>
+        <radialGradient id="nmCore"><stop stopColor="#e7bf62" stopOpacity=".08" /><stop offset="1" stopColor="#e7bf62" stopOpacity="0" /></radialGradient>
         <filter id="nmGlow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5" /></filter>
-        <filter id="nmBlur1" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation={1.1 * S} /></filter>
-        <filter id="nmBlur2" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation={2.4 * S} /></filter>
       </defs>
       <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
         <circle cx={W / 2} cy={H / 2} r={250 * S} fill="url(#nmCore)" />
@@ -323,9 +324,12 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
           const lit = !focus || (near.has(e.source) && near.has(e.target) && (e.source === focus || e.target === focus));
           const learned = e.adjustment ?? 0;
           const flashing = isFlash(e);
-          return <line key={`${e.relation}:${e.source}:${e.target}${flashing ? `:${flash!.stamp}` : ''}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            className={`neural-map__edge neural-map__edge--${family}${learned > 0 ? ' is-learned' : learned < 0 ? ' is-weakened' : ''}${flashing ? (flash!.helpful ? ' is-flash-up' : ' is-flash-down') : ''}`}
-            strokeWidth={(0.8 + Math.min(1, e.weight) * 2.6) * S} opacity={lit || flashing ? 0.9 : 0.08} />;
+          const touches = !!focus && (e.source === focus || e.target === focus);
+          const side = sideOf(e.source, e.target) * (e.source < e.target ? 1 : -1);
+          return <path key={`${e.relation}:${e.source}:${e.target}${flashing ? `:${flash!.stamp}` : ''}`} d={arc(a, b, 0.14, side)}
+            className={`neural-map__edge neural-map__edge--${family}${touches ? ' is-lit' : ''}${learned > 0 ? ' is-learned' : learned < 0 ? ' is-weakened' : ''}${flashing ? (flash!.helpful ? ' is-flash-up' : ' is-flash-down') : ''}`}
+            strokeWidth={(0.5 + Math.min(1, e.weight) * 1.3) * FAMILY_WIDTH[family] * (touches ? 1.6 : 1) * S}
+            opacity={flashing || touches ? 0.95 : lit ? (family === 'other' ? 0.12 : 0.22) : 0.05} />;
         })}
         {!calm() && pulses.map(p => <circle key={p.key} r={2.6 * S} className="neural-map__pulse">
           <animateMotion dur="1.6s" begin={`-${p.delay}s`} repeatCount="indefinite" path={p.d} />
@@ -344,23 +348,22 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
           const p = placed.get(n.id);
           if (!p) return null;
           const z = depthOf(n.id);
-          const r = (5 + Math.min(7, (degree.get(n.id) ?? 0) * 1.4)) * S * (0.72 + 0.5 * z);
+          const r = (5 + Math.min(7, (degree.get(n.id) ?? 0) * 1.4)) * S * (0.85 + 0.3 * z);
           const c = color.get(n.brain) ?? '#e7bf62';
           const dim = focus && !near.has(n.id);
           const active = n.id === selected;
           const young = now - n.createdAt < FRESH;
           const entering = born.has(n.id);
-          return <g key={n.id} className={`neural-map__node${entering ? ' is-born' : ''}`} opacity={dim ? 0.22 : 0.62 + 0.38 * z}
+          return <g key={n.id} className={`neural-map__node${entering ? ' is-born' : ''}`} opacity={dim ? 0.22 : 0.85 + 0.15 * z}
             style={entering ? { animationDelay: `${(hash(n.id) % 30) * 25}ms` } : undefined}
             tabIndex={0} role="button" aria-label={`Факт: ${brains.find(([id]) => id === n.brain)?.[1] ?? n.brain}, связей ${degree.get(n.id) ?? 0}`}
             onPointerEnter={() => setHover(n.id)} onPointerLeave={() => setHover('')}
             onPointerUp={event => { if (!drag.current?.moved) { event.stopPropagation(); drag.current = null; onSelect(n.id); } }}
             onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(n.id); } }}>
-            {(active || n.id === hover) && <circle cx={p.x} cy={p.y} r={r + 9} fill={c} opacity=".45" filter="url(#nmGlow)" />}
+            {(active || n.id === hover) && <circle cx={p.x} cy={p.y} r={r + 6} fill={c} opacity=".25" filter="url(#nmGlow)" />}
             {young && <circle cx={p.x} cy={p.y} r={r + 5 * S} fill="none" stroke={c} className="neural-map__fresh" />}
             {firing.has(n.id) && <circle cx={p.x} cy={p.y} r={r} fill="none" stroke={c} className="neural-map__ripple" />}
             <circle cx={p.x} cy={p.y} r={r} fill={c} stroke={active ? '#fbf3e4' : '#0d0a07'} strokeWidth={active ? 2.4 : 1.2}
-              filter={blurOf(n.id, p, z) || undefined}
               className="neural-map__dot" style={{ animationDelay: `${-(hash(n.id) % 4000)}ms` }} />
           </g>;
         })}

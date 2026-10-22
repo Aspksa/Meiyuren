@@ -10,10 +10,11 @@ import type { EvolutionLab, Health, NodeCard, QualityGate, Snapshot, UniverseGra
 
 /** Восемь мозгов: ключ, подпись и цвет на карте (тёплая палитра темы). */
 export const BRAINS = [
-  ['identity', 'Личность', '#f3d891'], ['episodes', 'События', '#f29e6b'],
-  ['goals', 'Цели', '#ef7b7b'], ['habits', 'Привычки', '#a6d48c'],
-  ['knowledge', 'Знания', '#74c7d6'], ['relationships', 'Люди', '#ea98c6'],
-  ['projects', 'Проекты', '#b9a0f2'], ['decisions', 'Решения', '#f5efe0'],
+  // Приглушённая золотая гамма: оттенки различимы, но не спорят с темой.
+  ['identity', 'Личность', '#e8c977'], ['episodes', 'События', '#d49a6a'],
+  ['goals', 'Цели', '#c98273'], ['habits', 'Привычки', '#b5b27a'],
+  ['knowledge', 'Знания', '#93ada3'], ['relationships', 'Люди', '#c99a9c'],
+  ['projects', 'Проекты', '#a99bb8'], ['decisions', 'Решения', '#e9dfc8'],
 ] as const;
 const brainName = (id: string) => BRAINS.find(([key]) => key === id)?.[1] ?? id;
 const brainColor = (id: string) => BRAINS.find(([key]) => key === id)?.[2] ?? '#e7bf62';
