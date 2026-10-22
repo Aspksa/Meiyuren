@@ -45,7 +45,9 @@ class SynapticStore:
             with conn:
                 row = conn.execute("SELECT adjustment,useful,harmful FROM neural_synapse_feedback WHERE left_id=? AND right_id=?",
                                    (a,b)).fetchone()
-                if row is None and conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback").fetchone()[0] >= MAX_PAIRS:
+                # Обнулённые синапсы не занимают место в лимите.
+                if row is None and conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback "
+                                                "WHERE adjustment!=0").fetchone()[0] >= MAX_PAIRS:
                     raise ValueError("Synapse limit reached")
                 old = float(row[0]) if row else 0
                 new = round(max(-MAX_ADJUSTMENT, min(MAX_ADJUSTMENT,
@@ -59,14 +61,26 @@ class SynapticStore:
         return new
 
     def apply(self, cortex, *, eligible: set[str]) -> int:
-        applied=0
+        """Load learned weights into a cortex.
+
+        Оценки связи (👍/👎 на ребре) и оценки факта в «Глубокой памяти»
+        (memory_synaptic_weights) складываются: обучение одной системы видно другой.
+        """
+        merged: dict[tuple[str,str],float]={}
         with closing(self._open()) as conn:
             rows=conn.execute("SELECT left_id,right_id,adjustment FROM neural_synapse_feedback").fetchall()
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='memory_synaptic_weights'").fetchone():
+                rows+=conn.execute("SELECT left_id,right_id,adjustment FROM memory_synaptic_weights").fetchall()
         for a,b,adjustment in rows:
-            if a in eligible and b in eligible and b in cortex.edges.get(a,{}):
-                cortex.feedback[(a,b)] = max(-MAX_ADJUSTMENT,min(MAX_ADJUSTMENT,float(adjustment)))
-                applied+=1
-        return applied
+            pair=tuple(sorted((a,b)))
+            merged[pair]=merged.get(pair,0.0)+float(adjustment)
+        fresh={}
+        for (a,b),adjustment in merged.items():
+            if a in eligible and b in eligible and b in cortex.edges.get(a,{}) and adjustment:
+                fresh[(a,b)]=max(-MAX_ADJUSTMENT,min(MAX_ADJUSTMENT,adjustment))
+        cortex.feedback=fresh
+        return len(fresh)
 
     def consolidate(self, *, eligible: set[str], force: bool = False) -> dict:
         """Remove orphaned edges and gradually decay unused weights.
@@ -81,7 +95,7 @@ class SynapticStore:
                 if last and not force and now-last[0]<MIN_INTERVAL:
                     return {"ran":False,"reason":"interval"}
                 rows=conn.execute("SELECT left_id,right_id,adjustment FROM neural_synapse_feedback").fetchall()
-                purged=decayed=0
+                purged=decayed=cleared=0
                 for a,b,value in rows:
                     if a not in eligible or b not in eligible:
                         conn.execute("DELETE FROM neural_synapse_feedback WHERE left_id=? AND right_id=?",(a,b))
@@ -89,9 +103,12 @@ class SynapticStore:
                     else:
                         adjusted=round(float(value)*0.98,4)
                         if abs(adjusted)<0.005:
-                            adjusted=0.0
+                            # Затухший синапс удаляется, а не копится до лимита MAX_PAIRS.
+                            conn.execute("DELETE FROM neural_synapse_feedback WHERE left_id=? AND right_id=?",(a,b))
+                            cleared+=1
+                            continue
                         conn.execute("UPDATE neural_synapse_feedback SET adjustment=? WHERE left_id=? AND right_id=?",
                                      (adjusted,a,b))
                         decayed+=1
                 conn.execute("INSERT OR REPLACE INTO neural_synapse_state VALUES('last_consolidation',?)",(now,))
-        return {"ran":True,"purged":purged,"decayed":decayed}
+        return {"ran":True,"purged":purged,"decayed":decayed,"cleared":cleared}

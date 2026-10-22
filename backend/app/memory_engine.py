@@ -19,7 +19,7 @@ import time
 import uuid
 
 from . import db
-from .neural_cortex import Node, NeuralCortex
+from .neural_cortex import MAX_NODES as MAX_CORTEX_NODES, Node, NeuralCortex
 from .neural_synapses import SynapticStore
 from . import semantic, understanding
 from .smart_memory import UNTRUSTED, durable_statement
@@ -254,6 +254,9 @@ class MemoryEngine:
         # Serializes the scheduled worker and explicit local process endpoint
         # within this FastAPI instance; SQLite leases still cover other instances.
         self._jobs_lock = threading.Lock()
+        # Cortex 3.0 строится один раз и пересобирается только когда меняется память.
+        self._cortex_lock = threading.Lock()
+        self._cortex_cache: tuple[tuple,NeuralCortex]|None = None
 
     def initialize(self, backup_existing: bool = False) -> None:
         # Backup API читает консистентный снимок даже если WAL активен.
@@ -2079,7 +2082,7 @@ class MemoryEngine:
                 "healthy":orphan_links==0 and orphan_vectors==0,
                 "checkedAt":now(),"readOnly":True}
 
-    def universe_snapshot(self) -> dict:
+    def universe_snapshot(self,save: bool=True) -> dict:
         """Durable aggregate snapshots, never retain forgotten fact IDs or texts."""
         counts=self.universe_health()
         with closing(db.connection(self.path)) as conn:
@@ -2088,10 +2091,11 @@ class MemoryEngine:
                              "(timestamp INTEGER PRIMARY KEY, counts TEXT NOT NULL, "
                              "orphan_links INTEGER NOT NULL, orphan_vectors INTEGER NOT NULL)")
                 ts=now()
-                conn.execute(
-                    "INSERT OR REPLACE INTO universe_snapshots VALUES(?,?,?,?)",
-                    (ts,json.dumps(counts["brains"],sort_keys=True),
-                     counts["orphanLinks"],counts["orphanVectors"]))
+                if save:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO universe_snapshots VALUES(?,?,?,?)",
+                        (ts,json.dumps(counts["brains"],sort_keys=True),
+                         counts["orphanLinks"],counts["orphanVectors"]))
                 rows=conn.execute("SELECT timestamp,counts,orphan_links,orphan_vectors "
                                   "FROM universe_snapshots ORDER BY timestamp DESC LIMIT 120").fetchall()
         return {"snapshots":[{"timestamp":r["timestamp"],
@@ -2111,7 +2115,8 @@ class MemoryEngine:
                 "ORDER BY updated_at DESC LIMIT ?",(stamp,cap)
             ).fetchall()
             allowed={r["id"] for r in facts}
-            nodes=[{"id":r["id"],"brain":r["brain"],"createdAt":r["created_at"]}
+            nodes=[{"id":r["id"],"brain":r["brain"],"createdAt":r["created_at"],
+                    "updatedAt":r["updated_at"]}
                    for r in facts if r["brain"] in BRAINS]
             links=conn.execute(
                 "SELECT left_id,right_id,relation,weight,updated_at FROM memory_links "
@@ -2120,6 +2125,12 @@ class MemoryEngine:
             edges=[{"source":r["left_id"],"target":r["right_id"],
                     "relation":r["relation"],"weight":r["weight"],"updatedAt":r["updated_at"]}
                    for r in links if r["left_id"] in allowed and r["right_id"] in allowed]
+        # Рёбра Cortex 3.0: вид связи (слова/смысл/оба) и выученная поправка, без текста.
+        born={r["id"]:max(r["created_at"],0) for r in facts}
+        for edge in self.neural_cortex().edge_list(allowed,limit=900):
+            edges.append({**edge,"relation":"cortex",
+                          "updatedAt":max(born[edge["source"]],born[edge["target"]])})
+        with closing(db.connection(self.path)) as conn:
             revisions=conn.execute(
                 "SELECT r.memory_id,r.action,r.created_at FROM memory_revisions r "
                 "JOIN memory_items m ON m.id=r.memory_id "
@@ -2150,9 +2161,13 @@ class MemoryEngine:
             ).fetchall()
             links=conn.execute("SELECT COUNT(*) FROM memory_links").fetchone()[0]
             neural=conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0]
+            meaning=conn.execute(
+                "SELECT COUNT(*) FROM memory_semantic_vectors v JOIN memory_items m "
+                "ON m.id=v.item_id AND v.digest=?||m.fingerprint WHERE m.status='confirmed'",
+                (semantic.VERSION,)).fetchone()[0]
         counts={name:0 for name in BRAINS}
         counts.update({r["brain"]:r["total"] for r in rows if r["brain"] in BRAINS})
-        return {"brains":counts,"links":links,"neuralVectors":neural,
+        return {"brains":counts,"links":links,"neuralVectors":neural,"semanticVectors":meaning,
                 "embeddingModel":EMBED_MODEL,"embeddingDimensions":EMBED_DIMS}
 
     def connections(self, item_id: str) -> list[dict]:
@@ -2701,6 +2716,14 @@ class MemoryEngine:
                     stored+=1
         return {"cortexEdges":stored,"cortexScanned":len(rows)}
 
+    def neural_cortex_status(self) -> dict:
+        cortex=self.neural_cortex()
+        brains=set()
+        for left,right in cortex.evidence:
+            brains.add(cortex.nodes[left].brain)
+            brains.add(cortex.nodes[right].brain)
+        return {**cortex.diagnostics(),"connectedBrains":len(brains)}
+
     def cortex_status(self) -> dict:
         with closing(db.connection(self.path)) as conn:
             n=conn.execute("SELECT COUNT(*) FROM memory_cortex_edges").fetchone()[0]
@@ -2789,6 +2812,11 @@ class MemoryEngine:
                     if link["left_id"] in ids and link["right_id"] in ids:
                         adjacency.setdefault(link["left_id"],set()).add(link["right_id"])
                         adjacency.setdefault(link["right_id"],set()).add(link["left_id"])
+            neural=self.neural_cortex()
+            for left,right in neural.evidence:
+                if left in ids and right in ids:
+                    adjacency.setdefault(left,set()).add(right)
+                    adjacency.setdefault(right,set()).add(left)
             baseline=mesh=0
             for expected,_,terms in fixtures:
                 query=set(sorted(terms)[:2])
@@ -2951,35 +2979,26 @@ class MemoryEngine:
                         # Cross-brain relevance is grounded by the linked seed.
                         value=overlap*2+float(edge["strength"])+float(edge["adjustment"])
                         bridge_options.append((value,neighbor["updatedAt"],neighbor))
-        # v0.19: optional ephemeral Cortex 2.0 augmentation. Construct ONLY
-        # from live, consent-filtered rows. Missing source IDs are excluded,
-        # and the original lexical slots remain protected.
-        if cap >= 3 and len(rows) <= 600:
-            sourced = [r for r in rows if r.get("sourceMessageId")
-                       and r.get("brain") in BRAINS]
-            if len(sourced) >= 2:
-                neural = NeuralCortex(
-                    Node(id=r["id"], brain=r["brain"], text=r["content"],
-                         source=r["sourceMessageId"])
-                    for r in sourced
-                )
-                SynapticStore(self.path).apply(
-                    neural, eligible=set(neural.nodes)
-                )
-                for seed in seeds[:3]:
-                    if seed["id"] not in neural.nodes:
+        # Cortex 3.0: хранимый граф по словам и смыслу. Обход идёт только по
+        # фактам, видимым в этом диалоге и режиме; лексические слоты защищены.
+        if cap >= 3:
+            neural = self.neural_cortex()
+            allowed = {r["id"] for r in rows if r.get("sourceMessageId")}
+            for seed in seeds[:3]:
+                for hit in neural.recall(seed["id"], conversation_id, depth=3,
+                                         limit=6, budget=40, allowed=allowed):
+                    neighbor = by_id.get(hit["id"])
+                    if not neighbor or neighbor["brain"] == seed["brain"]:
                         continue
-                    for hit in neural.recall(seed["id"], "global", depth=3,
-                                             limit=6, budget=40):
-                        neighbor = by_id.get(hit["id"])
-                        if not neighbor or neighbor["brain"] == seed["brain"]:
-                            continue
-                        overlap = len(tokens & _keywords(neighbor["content"]))
-                        if not overlap and not continue_mode:
-                            continue
-                        # Graph evidence assists ranking but never creates facts.
-                        score = overlap * 2 + float(hit["score"]) * 0.5
-                        bridge_options.append((score, neighbor["updatedAt"], neighbor))
+                    overlap = len(tokens & _keywords(neighbor["content"]))
+                    close = meaning.get(neighbor["id"], 0.0)
+                    # Мост проходит по общим словам с вопросом или по смыслу вопроса.
+                    if not overlap and close < semantic.MATCH and not continue_mode:
+                        continue
+                    # Graph evidence assists ranking but never creates facts.
+                    score = (overlap * 2 + (close * 2 if close >= semantic.MATCH else 0)
+                             + float(hit["score"]))
+                    bridge_options.append((score, neighbor["updatedAt"], neighbor))
         bridge_options.sort(key=lambda x:(-x[0],-x[1],x[2]["id"]))
         bridges=[]
         bridge_seen={seed["id"] for seed in seeds[:max(cap-2,1)]}
@@ -3011,23 +3030,91 @@ class MemoryEngine:
         return selections
 
     def neural_feedback(self, left_id: str, right_id: str, helpful: bool,
-                        conversation_id: str) -> dict:
-        """Explicit local feedback for a live, source-backed cross-brain link."""
-        visible = {r["id"]: r for r in
-                   self._visible_deep_rows(conversation_id, False)
-                   if r.get("sourceMessageId") and r.get("brain") in BRAINS}
+                        conversation_id: str | None) -> dict:
+        """Explicit local feedback for a live, source-backed cross-brain link.
+
+        conversation_id=None — карта нейросети: видны все локальные факты.
+        """
+        if conversation_id is None:
+            visible = {r["id"]: r for r in self._cortex_rows()}
+        else:
+            visible = {r["id"]: r for r in
+                       self._visible_deep_rows(conversation_id, False)
+                       if r.get("sourceMessageId") and r.get("brain") in BRAINS}
         if left_id not in visible or right_id not in visible:
             raise ValueError("Both memories must be visible and source-backed")
         if visible[left_id]["brain"] == visible[right_id]["brain"]:
             raise ValueError("Feedback requires a cross-brain link")
-        cortex = NeuralCortex(Node(id=r["id"], brain=r["brain"],
-                                   text=r["content"], source=r["sourceMessageId"])
-                              for r in visible.values())
+        cortex = self.neural_cortex()
         if right_id not in cortex.edges.get(left_id, {}):
             raise ValueError("No current evidence-backed link")
         adjustment = SynapticStore(self.path).feedback(
             left_id, right_id, helpful, eligible=set(cortex.nodes))
-        return {"adjustment": adjustment, "helpful": helpful}
+        return {"adjustment": adjustment, "helpful": helpful,
+                "weight": round(self.neural_cortex().weight(left_id, right_id), 4)}
+
+    def _cortex_rows(self) -> list[dict]:
+        """Все подтверждённые факты с источником; свежие первыми. Без секретов."""
+        with closing(db.connection(self.path)) as conn:
+            rows = conn.execute(
+                "SELECT id,brain,content,source_message_id,conversation_id,created_at,updated_at "
+                "FROM memory_items WHERE status='confirmed' AND source_message_id IS NOT NULL "
+                "AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC,id LIMIT ?",
+                (now(), MAX_CORTEX_NODES)).fetchall()
+        return [{"id": r["id"], "brain": r["brain"], "content": r["content"],
+                 "sourceMessageId": r["source_message_id"], "scope": r["conversation_id"] or "global",
+                 "createdAt": r["created_at"], "updatedAt": r["updated_at"]}
+                for r in rows if r["brain"] in BRAINS and not SECRET.search(r["content"])]
+
+    def neural_cortex(self) -> NeuralCortex:
+        """Cortex 3.0 из кэша; пересборка только после изменения фактов или векторов смысла."""
+        semantic_on = bool(self.policy()["semantic_model"])
+        with closing(db.connection(self.path)) as conn:
+            facts = conn.execute(
+                "SELECT COUNT(*),MAX(updated_at),MIN(expires_at) FROM memory_items "
+                "WHERE status='confirmed' AND (expires_at IS NULL OR expires_at>?)",
+                (now(),)).fetchone()
+            vectors = (conn.execute("SELECT COUNT(*),MAX(updated_at) FROM memory_semantic_vectors")
+                       .fetchone() if semantic_on else (0, 0))
+        signature = (tuple(facts), tuple(vectors), semantic_on)
+        with self._cortex_lock:
+            cached = self._cortex_cache
+            if cached is None or cached[0] != signature:
+                rows = self._cortex_rows()
+                with closing(db.connection(self.path)) as conn:
+                    meaning = self._branch_vectors(conn) if semantic_on else {}
+                cortex = NeuralCortex(
+                    (Node(id=r["id"], brain=r["brain"], text=r["content"],
+                          source=r["sourceMessageId"], scope=r["scope"]) for r in rows),
+                    vectors={i: meaning[i] for i in (r["id"] for r in rows) if i in meaning})
+                self._cortex_cache = cached = (signature, cortex)
+            cortex = cached[1]
+            SynapticStore(self.path).apply(cortex, eligible=set(cortex.nodes))
+            return cortex
+
+    def universe_node(self, item_id: str) -> dict:
+        """Карточка узла карты: сам факт и его связи с объяснением, все данные локальные."""
+        rows = {r["id"]: r for r in self._cortex_rows()}
+        if item_id not in rows:
+            raise ValueError("Воспоминание удалено, устарело или без источника.")
+        cortex = self.neural_cortex()
+        links = []
+        for other in sorted(cortex.edges.get(item_id, {}),
+                            key=lambda o: -cortex.weight(item_id, o)):
+            if other not in rows:
+                continue
+            pair = tuple(sorted((item_id, other)))
+            info = cortex.evidence.get(pair, {})
+            links.append({"id": other, "brain": rows[other]["brain"],
+                          "content": rows[other]["content"][:240],
+                          "kind": info.get("kind", "lexical"), "terms": info.get("terms", []),
+                          "meaning": info.get("meaning"),
+                          "weight": round(cortex.weight(item_id, other), 4),
+                          "adjustment": round(cortex.feedback.get(pair, 0.0), 4)})
+        item = rows[item_id]
+        return {"item": {"id": item_id, "brain": item["brain"], "content": item["content"],
+                         "createdAt": item["createdAt"], "updatedAt": item["updatedAt"]},
+                "links": links}
 
     def adaptive_brain_overview(self, conversation_id: str,
                                 cloud_mode: bool=False) -> dict:
@@ -3116,6 +3203,7 @@ class MemoryEngine:
 
     def record_feedback(self,item_id: str,helpful: bool) -> dict:
         """Явная обратная связь; повторение факта не повышает его достоверность."""
+        cortex=self.neural_cortex()
         with closing(db.connection(self.path)) as conn:
             with conn:
                 row=conn.execute("SELECT id FROM memory_items WHERE id=? AND status='confirmed'",
@@ -3140,8 +3228,11 @@ class MemoryEngine:
                     "WHERE left_id=? OR right_id=?"
                     ") LIMIT 16",(item_id,item_id,item_id,item_id)
                 ).fetchall()
-                for edge in edges:
-                    pair=tuple(sorted((edge["left_id"],edge["right_id"])))
+                pairs={tuple(sorted((edge["left_id"],edge["right_id"]))) for edge in edges}
+                # Связи Cortex 3.0 учатся от той же оценки факта.
+                pairs|={tuple(sorted((item_id,other)))
+                        for other in list(cortex.edges.get(item_id,{}))[:12]}
+                for pair in sorted(pairs):
                     old=conn.execute(
                         "SELECT adjustment,observations FROM memory_synaptic_weights "
                         "WHERE left_id=? AND right_id=?",pair
@@ -3332,4 +3423,4 @@ class MemoryEngine:
         return dict(facts=confirmed,pending=candidates,jobs=queued,summaries=summaries,
                     policy=self.policy(),network=self.brains(),autonomousBranches=branches,
                     deep=self.deep_metrics(),evolution=self.evolution_status(),
-                    cortex=self.cortex_status())
+                    cortex=self.cortex_status(),neuralCortex=self.neural_cortex_status())
