@@ -110,7 +110,27 @@
 .neural-map__edge.is-flash-up { animation: nm-flash-up 1.4s ease-out; }
 .neural-map__edge.is-flash-down { animation: nm-flash-down 1.4s ease-out forwards; }
 .neural-map__sparks circle { fill: #ef9b7b; animation: nm-spark 1s ease-out forwards; }
-.neural-map__brain circle:first-child { animation: nm-aura 7s ease-in-out infinite; }
+/* Туманности, созвездия, звёзды, глубина и сон. */
+.neural-map .neural-map__sky { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; max-height: none; pointer-events: none; will-change: filter, opacity; animation: nm-sky 24s ease-in-out infinite; transition: opacity 2.4s ease; }
+.neural-map > svg:not(.neural-map__sky) { position: relative; }
+.neural-map.is-asleep .neural-map__sky { opacity: .5; }
+.neural-map__sign { font-size: 46px; opacity: .16; pointer-events: none; }
+.neural-map--compact .neural-map__sign { font-size: 70px; }
+.neural-map__label-sign { opacity: .85; }
+.neural-map__constellations line { stroke: #f3d891; stroke-opacity: .55; stroke-linecap: round; filter: drop-shadow(0 0 2px #e7bf62); transition: opacity .2s; }
+.neural-map__stars circle { fill: #fbf3e4; opacity: .4; }
+.neural-map__stars circle.is-twinkle { animation: nm-twinkle 5s ease-in-out infinite; }
+.neural-map__night { fill: #050302; opacity: 0; transition: opacity 2.4s ease; }
+.neural-map.is-asleep .neural-map__night { opacity: .5; }
+.neural-map.is-asleep .neural-map__dot { animation-duration: 9s; }
+.neural-map.is-asleep .neural-map__pulse, .neural-map.is-asleep .neural-map__ripple { display: none; }
+.neural-map__dream-trail { fill: none; stroke: #c9b2ff; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; filter: drop-shadow(0 0 4px #b9a0f2); animation: nm-dream 2.6s ease-in-out forwards; }
+.neural-map__dream-spark { fill: #f4ecff; filter: drop-shadow(0 0 5px #c9b2ff) drop-shadow(0 0 12px #b9a0f2); }
+.neural-map__sleep { position: absolute; left: 14px; top: 12px; padding: 5px 11px; border-radius: 999px; border: 1px solid #b9a0f244; background: #120d18cc; color: #d9cbff; font-size: 12px; letter-spacing: .04em; white-space: nowrap; opacity: 0; transform: translateY(-4px); transition: opacity 1.6s, transform 1.6s; pointer-events: none; }
+.neural-map.is-asleep .neural-map__sleep { opacity: 1; transform: none; }
+@keyframes nm-sky { 0%, 100% { filter: hue-rotate(0deg) brightness(1); } 50% { filter: hue-rotate(32deg) brightness(1.15); } }
+@keyframes nm-twinkle { 0%, 100% { opacity: .15; } 50% { opacity: .8; } }
+@keyframes nm-dream { 0% { stroke-dashoffset: 1; opacity: 0; } 15% { opacity: .9; } 70% { stroke-dashoffset: 0; opacity: .8; } 100% { stroke-dashoffset: 0; opacity: 0; } }
 @keyframes nm-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
 @keyframes nm-fresh { 0%, 100% { opacity: .15; transform: scale(.9); } 50% { opacity: .7; transform: scale(1.15); } }
 @keyframes nm-ripple { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(3); } }
@@ -118,7 +138,6 @@
 @keyframes nm-flash-up { 0% { stroke: #fff6dc; stroke-width: 9; filter: drop-shadow(0 0 10px #e7bf62); } 100% { filter: none; } }
 @keyframes nm-flash-down { 0% { stroke: #ef7b7b; } 100% { stroke-opacity: .25; } }
 @keyframes nm-spark { from { opacity: 1; transform: translate(0, 0); } to { opacity: 0; transform: translate(var(--dx), var(--dy)); } }
-@keyframes nm-aura { 0%, 100% { opacity: .05; } 50% { opacity: .11; } }
 
 /* Мозги */
 .neural-universe__brains { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -180,9 +199,10 @@
   .neural-universe__timeline label { flex-direction: column; align-items: stretch; gap: 6px; }
   .neural-universe__journal time { width: auto; }
 }
+@media (max-width: 600px) { .neural-map__sleep span { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   .neural-universe { animation: none; }
-  .neural-map__dot, .neural-map__fresh, .neural-map__ripple, .neural-map__node.is-born, .neural-map__brain circle:first-child,
+  .neural-map__dot, .neural-map__fresh, .neural-map__ripple, .neural-map__node.is-born, .neural-map__sky, .neural-map__stars circle.is-twinkle,
   .neural-map__edge.is-flash-up, .neural-map__edge.is-flash-down { animation: none; }
-  .neural-universe__brain, .neural-map__edge, .neural-map__node { transition: none; }
+  .neural-universe__brain, .neural-map__edge, .neural-map__node, .neural-map__night, .neural-map__sleep { transition: none; }
 }
