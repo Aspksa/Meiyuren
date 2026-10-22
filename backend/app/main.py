@@ -739,10 +739,12 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             previous=None
             while not await request.is_disconnected():
                 current=engine.universe_health()
+                # checkedAt меняется каждый раз; событие шлём только при изменении самих данных.
                 payload=json.dumps(current,ensure_ascii=False,sort_keys=True)
-                if payload!=previous:
+                state=json.dumps({k:v for k,v in current.items() if k!="checkedAt"},ensure_ascii=False,sort_keys=True)
+                if state!=previous:
                     yield "event: health\ndata: "+payload+"\n\n"
-                    previous=payload
+                    previous=state
                 else:
                     yield ": heartbeat\n\n"
                 await asyncio.sleep(5)

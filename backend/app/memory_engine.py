@@ -2127,9 +2127,16 @@ class MemoryEngine:
                    for r in links if r["left_id"] in allowed and r["right_id"] in allowed]
         # Рёбра Cortex 3.0: вид связи (слова/смысл/оба) и выученная поправка, без текста.
         born={r["id"]:max(r["created_at"],0) for r in facts}
+        # Связь по смыслу существует с момента, когда модель прочитала оба факта, а не с их создания.
+        with closing(db.connection(self.path)) as conn:
+            read_at={r[0]:r[1] for r in conn.execute(
+                "SELECT item_id,updated_at FROM memory_semantic_vectors")}
         for edge in self.neural_cortex().edge_list(allowed,limit=900):
-            edges.append({**edge,"relation":"cortex",
-                          "updatedAt":max(born[edge["source"]],born[edge["target"]])})
+            left,right=edge["source"],edge["target"]
+            since=max(born[left],born[right])
+            if edge["kind"]!="lexical":
+                since=max(since,read_at.get(left,0),read_at.get(right,0))
+            edges.append({**edge,"relation":"cortex","updatedAt":since})
         with closing(db.connection(self.path)) as conn:
             revisions=conn.execute(
                 "SELECT r.memory_id,r.action,r.created_at FROM memory_revisions r "
@@ -2163,8 +2170,9 @@ class MemoryEngine:
             neural=conn.execute("SELECT COUNT(*) FROM memory_vectors").fetchone()[0]
             meaning=conn.execute(
                 "SELECT COUNT(*) FROM memory_semantic_vectors v JOIN memory_items m "
-                "ON m.id=v.item_id AND v.digest=?||m.fingerprint WHERE m.status='confirmed'",
-                (semantic.VERSION,)).fetchone()[0]
+                "ON m.id=v.item_id AND v.digest=?||m.fingerprint WHERE m.status='confirmed' "
+                "AND (m.expires_at IS NULL OR m.expires_at>?)",
+                (semantic.VERSION,now())).fetchone()[0]
         counts={name:0 for name in BRAINS}
         counts.update({r["brain"]:r["total"] for r in rows if r["brain"] in BRAINS})
         return {"brains":counts,"links":links,"neuralVectors":neural,"semanticVectors":meaning,
@@ -3095,8 +3103,14 @@ class MemoryEngine:
     def universe_node(self, item_id: str) -> dict:
         """Карточка узла карты: сам факт и его связи с объяснением, все данные локальные."""
         rows = {r["id"]: r for r in self._cortex_rows()}
-        if item_id not in rows:
-            raise ValueError("Воспоминание удалено, устарело или без источника.")
+        with closing(db.connection(self.path)) as conn:
+            # Факт, добавленный вручную, без источника тоже открывается: у него просто нет связей Cortex.
+            live = conn.execute(
+                "SELECT id,brain,content,created_at,updated_at FROM memory_items WHERE id=? "
+                "AND status='confirmed' AND (expires_at IS NULL OR expires_at>?)",
+                (item_id, now())).fetchone()
+        if live is None or SECRET.search(live["content"]):
+            raise ValueError("Воспоминание удалено или устарело.")
         cortex = self.neural_cortex()
         links = []
         for other in sorted(cortex.edges.get(item_id, {}),
@@ -3111,9 +3125,8 @@ class MemoryEngine:
                           "meaning": info.get("meaning"),
                           "weight": round(cortex.weight(item_id, other), 4),
                           "adjustment": round(cortex.feedback.get(pair, 0.0), 4)})
-        item = rows[item_id]
-        return {"item": {"id": item_id, "brain": item["brain"], "content": item["content"],
-                         "createdAt": item["createdAt"], "updatedAt": item["updatedAt"]},
+        return {"item": {"id": item_id, "brain": live["brain"], "content": live["content"],
+                         "createdAt": live["created_at"], "updatedAt": live["updated_at"]},
                 "links": links}
 
     def adaptive_brain_overview(self, conversation_id: str,

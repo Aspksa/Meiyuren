@@ -62,14 +62,19 @@ def test_recall_takes_strongest_path():
 def test_zeroed_synapses_are_deleted_and_do_not_fill_limit(tmp_path, monkeypatch):
     store = SynapticStore(tmp_path / "s.sqlite3")
     store.feedback("a", "b", True, eligible={"a", "b"})
-    store.feedback("a", "b", False, eligible={"a", "b"})
+    # Оценки погасили друг друга — синапс удалён сразу.
+    assert store.feedback("a", "b", False, eligible={"a", "b"}) == 0
     monkeypatch.setattr("backend.app.neural_synapses.MAX_PAIRS", 1)
-    # Обнулённая пара не мешает новой.
     assert store.feedback("c", "d", True, eligible={"c", "d"}) == 0.05
+    with pytest.raises(ValueError):
+        store.feedback("a", "b", True, eligible={"a", "b"})
+    # Затухший синапс тоже удаляется при консолидации.
+    with closing(store._open()) as conn, conn:
+        conn.execute("UPDATE neural_synapse_feedback SET adjustment=0.004")
     result = store.consolidate(eligible={"a", "b", "c", "d"}, force=True)
     assert result["cleared"] == 1
     with closing(store._open()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback").fetchone()[0] == 0
 
 
 def test_apply_merges_fact_feedback_weights(tmp_path):
@@ -141,6 +146,26 @@ def test_map_node_card_and_synapse_feedback(app):
     status = client.get("/api/memory/status").json()
     assert status["neuralCortex"]["edges"] == 1
     assert status["neuralCortex"]["learnedSynapses"] == 1
+
+
+def test_manual_fact_card_opens_without_links(app):
+    client, _ = app
+    manual = client.post("/api/memory/facts", json={"content": "Люблю зелёный чай", "brain": "identity",
+                                                    "cloudAllowed": False})
+    assert manual.status_code == 201, manual.text
+    card = client.get("/api/memory/universe/nodes/" + manual.json()["id"])
+    assert card.status_code == 200 and card.json()["links"] == []
+
+
+def test_recall_keeps_shorter_weaker_path_alive():
+    graph = NeuralCortex([Node(i, b, "x", "m") for i, b in
+                          (("s", "projects"), ("a", "goals"), ("b", "habits"), ("hub", "knowledge"), ("far", "decisions"))])
+    graph.edges.clear()
+    for left, right, w in (("s", "a", 1.0), ("a", "b", 1.0), ("b", "hub", 1.0), ("s", "hub", 0.5), ("hub", "far", 1.0)):
+        graph.edges[left][right] = graph.edges[right][left] = w
+    # Сильный путь доходит до hub за 3 шага и упирается в глубину; короткий слабый доходит до far.
+    found = {r["id"] for r in graph.recall("s", "global", depth=3)}
+    assert "far" in found
 
 
 def test_snapshots_list_without_saving(app):

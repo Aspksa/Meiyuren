@@ -32,6 +32,8 @@ LEXICAL_MIN = 0.08
 SEMANTIC_MIN = 0.6
 # Слова, встречающиеся в большой доле фактов, не создают рёбер: иначе получаются клики.
 COMMON_SHARE = 0.25
+# Сколько ближайших по смыслу соседей рассматривать на факт до отбора рёбер.
+TOP_MEANING = MAX_DEGREE * 2
 
 @dataclass(frozen=True)
 class Node:
@@ -82,9 +84,16 @@ class NeuralCortex:
             return result
         matrix = numpy.asarray([vectors[i] for i in ids], dtype=numpy.float32)
         scores = matrix @ matrix.T
-        rows, cols = numpy.nonzero(numpy.triu(scores >= SEMANTIC_MIN, k=1))
-        for r, c in zip(rows.tolist(), cols.tolist()):
-            result[(ids[r], ids[c])] = float(scores[r, c])
+        numpy.fill_diagonal(scores, -1.0)
+        # Не больше TOP_MEANING кандидатов на факт: даже 1500 похожих фактов не дают миллион пар.
+        top = min(TOP_MEANING, len(ids) - 1)
+        best = numpy.argpartition(-scores, top - 1, axis=1)[:, :top]
+        for r in range(len(ids)):
+            for c in best[r].tolist():
+                value = float(scores[r, c])
+                if value >= SEMANTIC_MIN:
+                    pair = (ids[r], ids[c]) if ids[r] < ids[c] else (ids[c], ids[r])
+                    result[pair] = value
         for left, right in lexical:
             if (left, right) not in result and left in vectors and right in vectors:
                 result[(left, right)] = float(numpy.dot(vectors[left], vectors[right]))
@@ -169,16 +178,20 @@ class NeuralCortex:
             return []
         cap, spend, max_depth = min(limit, 32), min(budget, 200), min(depth, 4)
         heap = [(-1.0, 0, seed, "")]
-        best = {seed: 1.0}
-        done: set[str] = set()
+        # Состояние — узел и число шагов: короткий, но чуть более слабый путь
+        # ещё может дотянуться до соседей, недоступных длинному сильному пути.
+        best = {(seed, 0): 1.0}
+        done: set[tuple[str, int]] = set()
+        reported = {seed}
         results = []
         expanded = 0
         while heap and len(results) < cap and expanded < spend:
             neg, hop, source, via = heapq.heappop(heap)
-            if source in done:
+            if (source, hop) in done or any((source, h) in done for h in range(hop)):
                 continue
-            done.add(source)
-            if source != seed:
+            done.add((source, hop))
+            if source not in reported:
+                reported.add(source)
                 pair = tuple(sorted((via, source)))
                 results.append({"id": source, "brain": self.nodes[source].brain,
                                 "source": self.nodes[source].source,
@@ -190,14 +203,14 @@ class NeuralCortex:
                 expanded += 1
                 if expanded > spend:
                     break
-                if target in done or self.nodes[target].scope not in ("global", scope):
+                if target == seed or self.nodes[target].scope not in ("global", scope):
                     continue
                 if allowed is not None and target not in allowed:
                     continue
                 score = -neg * self.weight(source, target) * (0.85 ** hop)
-                if score <= 0 or score <= best.get(target, 0.0):
+                if score <= 0 or score <= best.get((target, hop + 1), 0.0):
                     continue
-                best[target] = score
+                best[(target, hop + 1)] = score
                 heapq.heappush(heap, (-score, hop + 1, target, source))
         return results
 

@@ -83,8 +83,14 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     void getEvolutionLab(signal).then(setLab).catch(() => undefined);
     void getSnapshots(false, signal).then(setSnapshots).catch(() => undefined);
     const stream = new EventSource('/api/memory/universe/events');
+    // Сервер шлёт событие только при изменении связности; граф перечитываем лишь тогда, когда оно не первое.
+    let seen = false;
     stream.addEventListener('health', message => {
-      try { setHealth(JSON.parse((message as MessageEvent).data) as Health); void refresh(signal); } catch { /* повреждённое событие пропускаем */ }
+      try {
+        setHealth(JSON.parse((message as MessageEvent).data) as Health);
+        if (seen) void refresh(signal);
+        seen = true;
+      } catch { /* повреждённое событие пропускаем */ }
     });
     const interval = window.setInterval(() => void refresh(signal), 15000);
     return () => { controller.abort(); stream.close(); window.clearInterval(interval); };
@@ -99,6 +105,11 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     });
     return () => controller.abort();
   }, [selected]);
+
+  // Факт забыт или устарел, пока карта открыта: закрываем его карточку.
+  useEffect(() => {
+    if (selected && graph && !graph.nodes.some(n => n.id === selected)) setSelected('');
+  }, [graph, selected]);
 
   // На узком экране карточка под картой: после выбора факта прокручиваем к ней.
   const cardId = card?.item.id;

@@ -45,13 +45,17 @@ class SynapticStore:
             with conn:
                 row = conn.execute("SELECT adjustment,useful,harmful FROM neural_synapse_feedback WHERE left_id=? AND right_id=?",
                                    (a,b)).fetchone()
-                # Обнулённые синапсы не занимают место в лимите.
-                if row is None and conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback "
+                # Обнулённые синапсы не занимают место в лимите, но и не обходят его при оживлении.
+                if (row is None or not row[0]) and conn.execute("SELECT COUNT(*) FROM neural_synapse_feedback "
                                                 "WHERE adjustment!=0").fetchone()[0] >= MAX_PAIRS:
                     raise ValueError("Synapse limit reached")
                 old = float(row[0]) if row else 0
                 new = round(max(-MAX_ADJUSTMENT, min(MAX_ADJUSTMENT,
                                 old + (0.05 if helpful else -0.05))), 4)
+                if not new:
+                    # Оценки погасили друг друга: синапса больше нет.
+                    conn.execute("DELETE FROM neural_synapse_feedback WHERE left_id=? AND right_id=?",(a,b))
+                    return new
                 conn.execute("""INSERT INTO neural_synapse_feedback VALUES(?,?,?,?,?,?)
                     ON CONFLICT(left_id,right_id) DO UPDATE SET
                     adjustment=excluded.adjustment,useful=excluded.useful,
