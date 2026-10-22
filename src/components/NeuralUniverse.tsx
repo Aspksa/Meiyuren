@@ -106,9 +106,14 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     return () => controller.abort();
   }, [selected]);
 
-  // Факт забыт или устарел, пока карта открыта: закрываем его карточку.
+  // Факт пропал с карты: проверяем, жив ли он (он может быть просто вне 300 показанных), и закрываем карточку, если забыт.
   useEffect(() => {
-    if (selected && graph && !graph.nodes.some(n => n.id === selected)) setSelected('');
+    if (!selected || !graph || graph.nodes.some(n => n.id === selected)) return;
+    const controller = new AbortController();
+    void getNodeCard(selected, controller.signal).then(setCard).catch(() => {
+      if (!controller.signal.aborted) setSelected('');
+    });
+    return () => controller.abort();
   }, [graph, selected]);
 
   // На узком экране карточка под картой: после выбора факта прокручиваем к ней.

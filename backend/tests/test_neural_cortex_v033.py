@@ -36,6 +36,16 @@ def test_meaning_edge_without_shared_words():
     assert graph.diagnostics()["semanticEdges"] == 1
 
 
+def test_same_brain_neighbours_do_not_crowd_out_meaning_links():
+    close = unit(1, 0.05, 0)
+    nodes = [Node(f"g{i}", "goals", f"цель {i}", "m") for i in range(30)]
+    nodes.append(Node("h", "habits", "привычка", "m"))
+    vectors = {f"g{i}": unit(1, 0.05 + i * 0.001, 0) for i in range(30)}
+    vectors["h"] = unit(1, 0.3, 0)
+    graph = NeuralCortex(nodes, vectors={**vectors, "probe": close})
+    assert graph.edges.get("h"), "кросс-мозговая связь по смыслу должна появиться"
+
+
 def test_recall_never_walks_through_hidden_fact():
     graph = NeuralCortex([Node("a", "projects", "Meiyuren Python SQLite", "m1"),
                           Node("hidden", "knowledge", "Meiyuren Python SQLite React", "m2"),

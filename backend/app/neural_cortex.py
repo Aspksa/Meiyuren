@@ -85,6 +85,12 @@ class NeuralCortex:
         matrix = numpy.asarray([vectors[i] for i in ids], dtype=numpy.float32)
         scores = matrix @ matrix.T
         numpy.fill_diagonal(scores, -1.0)
+        # Пары, которые связать нельзя (один мозг, разные диалоги), не занимают места в top-k.
+        brains = numpy.asarray([self.nodes[i].brain for i in ids])
+        scopes = numpy.asarray([self.nodes[i].scope for i in ids])
+        local = scopes != "global"
+        apart = (scopes[:, None] != scopes[None, :]) & local[:, None] & local[None, :]
+        scores[(brains[:, None] == brains[None, :]) | apart] = -1.0
         # Не больше TOP_MEANING кандидатов на факт: даже 1500 похожих фактов не дают миллион пар.
         top = min(TOP_MEANING, len(ids) - 1)
         best = numpy.argpartition(-scores, top - 1, axis=1)[:, :top]
