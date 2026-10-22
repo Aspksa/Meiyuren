@@ -10,6 +10,11 @@ export const edgeFamily = (edge: GraphEdge): EdgeFamily =>
 // Широкий экран — горизонтальная карта, телефон — вертикальная, чтобы точки не мельчали.
 const WIDE = { W: 1000, H: 640, scale: 1 }, TALL = { W: 600, H: 860, scale: 1.7 };
 const compactQuery = '(max-width: 600px)';
+const calm = () => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const FRESH = 3 * 24 * 3600 * 1000;
+const RECENT_RECALL = 15 * 60 * 1000;
+const hash = (value: string) => [...value].reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 7) >>> 0;
+export type SynapseFlash = { a: string; b: string; helpful: boolean; stamp: number };
 
 type Props = {
   graph: UniverseGraph | null;
@@ -19,10 +24,15 @@ type Props = {
   at: number;
   selected: string;
   onSelect: (id: string) => void;
+  flash?: SynapseFlash | null;
 };
 
-export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected, onSelect }: Props) {
+export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected, onSelect, flash }: Props) {
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [born, setBorn] = useState<Set<string>>(new Set());
+  const known = useRef<Set<string> | null>(null);
   const [hover, setHover] = useState('');
   const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const color = useMemo(() => new Map(brains.map(([id, , c]) => [id, c])), [brains]);
@@ -40,6 +50,27 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
   // Раскладка считается по всему графу, чтобы фильтры и время не перетасовывали узлы.
   const placed = useMemo(() => layoutGraph(graph?.nodes ?? [],
     (graph?.edges ?? []).filter(e => e.relation === 'cortex'), W, H), [graph, W, H]);
+  const placedRef = useRef(placed);
+  placedRef.current = placed;
+
+  // Плавный полёт камеры к выбранному факту.
+  useEffect(() => {
+    const p = selected ? placedRef.current.get(selected) : undefined;
+    if (!p) return;
+    const from = viewRef.current;
+    const k = Math.max(from.k, 1.3);
+    const to = { k, x: W / 2 - p.x * k, y: H / 2 - p.y * k };
+    if (calm()) { setView(to); return; }
+    let frame = 0;
+    const start = performance.now();
+    const step = (time: number) => {
+      const t = Math.min(1, (time - start) / 650), e = 1 - Math.pow(1 - t, 3);
+      setView({ k: from.k + (to.k - from.k) * e, x: from.x + (to.x - from.x) * e, y: from.y + (to.y - from.y) * e });
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [selected, W, H]);
 
   const nodes = (graph?.nodes ?? []).filter(n => n.createdAt <= at && !hiddenBrains.has(n.brain));
   const visible = new Set(nodes.map(n => n.id));
@@ -56,6 +87,32 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
     if (e.source === focus) near.add(e.target);
     if (e.target === focus) near.add(e.source);
   }
+  // Рождение факта: точки, которые только что появились (новый факт, шкала времени, фильтр), вспыхивают.
+  const visibleKey = nodes.map(n => n.id).join(',');
+  useEffect(() => {
+    if (!graph) return;
+    const ids = visibleKey ? visibleKey.split(',') : [];
+    const fresh = ids.filter(id => !known.current?.has(id));
+    known.current = new Set(ids);
+    if (fresh.length && !calm()) setBorn(new Set(fresh));
+  }, [visibleKey, graph]);
+  useEffect(() => {
+    if (!born.size) return;
+    const timer = window.setTimeout(() => setBorn(new Set()), 1800);
+    return () => window.clearTimeout(timer);
+  }, [born]);
+
+  // Импульсы бегут от выбранного факта и от фактов, которые Мэйюрэн недавно вспоминала.
+  const now = Date.now();
+  const firing = new Set<string>(graph?.events.filter(e => e.kind === 'recall' && now - e.timestamp < RECENT_RECALL).map(e => e.nodeId));
+  if (selected) firing.add(selected);
+  const pulses = edges.filter(e => e.relation === 'cortex' && (firing.has(e.source) || firing.has(e.target))).slice(0, 24)
+    .flatMap(e => {
+      const fromSource = firing.has(e.source);
+      const a = placed.get(fromSource ? e.source : e.target), b = placed.get(fromSource ? e.target : e.source);
+      return a && b ? [{ key: `${e.source}:${e.target}`, d: `M${a.x},${a.y} L${b.x},${b.y}`, delay: (hash(e.target) % 1600) / 1000 }] : [];
+    });
+  const isFlash = (e: GraphEdge) => !!flash && ((e.source === flash.a && e.target === flash.b) || (e.source === flash.b && e.target === flash.a));
   const counts = new Map<string, number>();
   for (const n of nodes) counts.set(n.brain, (counts.get(n.brain) ?? 0) + 1);
 
@@ -109,10 +166,24 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
           const family = edgeFamily(e);
           const lit = !focus || (near.has(e.source) && near.has(e.target) && (e.source === focus || e.target === focus));
           const learned = e.adjustment ?? 0;
-          return <line key={`${e.relation}:${e.source}:${e.target}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            className={`neural-map__edge neural-map__edge--${family}${learned > 0 ? ' is-learned' : learned < 0 ? ' is-weakened' : ''}`}
-            strokeWidth={(0.8 + Math.min(1, e.weight) * 2.6) * S} opacity={lit ? 0.9 : 0.08} />;
+          const flashing = isFlash(e);
+          return <line key={`${e.relation}:${e.source}:${e.target}${flashing ? `:${flash!.stamp}` : ''}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+            className={`neural-map__edge neural-map__edge--${family}${learned > 0 ? ' is-learned' : learned < 0 ? ' is-weakened' : ''}${flashing ? (flash!.helpful ? ' is-flash-up' : ' is-flash-down') : ''}`}
+            strokeWidth={(0.8 + Math.min(1, e.weight) * 2.6) * S} opacity={lit || flashing ? 0.9 : 0.08} />;
         })}
+        {!calm() && pulses.map(p => <circle key={p.key} r={2.6 * S} className="neural-map__pulse">
+          <animateMotion dur="1.6s" begin={`-${p.delay}s`} repeatCount="indefinite" path={p.d} />
+        </circle>)}
+        {flash && !flash.helpful && !calm() && (() => {
+          const a = placed.get(flash.a), b = placed.get(flash.b);
+          if (!a || !b) return null;
+          return <g key={flash.stamp} className="neural-map__sparks">
+            {Array.from({ length: 8 }, (_, i) => {
+              const t = (i + 0.5) / 8, x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
+              return <circle key={i} cx={x} cy={y} r={2 * S} style={{ ['--dx' as string]: `${((i * 37) % 21) - 10}px`, ['--dy' as string]: `${12 + (i * 13) % 14}px`, animationDelay: `${i * 40}ms` }} />;
+            })}
+          </g>;
+        })()}
         {nodes.map(n => {
           const p = placed.get(n.id);
           if (!p) return null;
@@ -120,13 +191,19 @@ export function NeuralMap({ graph, brains, hiddenBrains, families, at, selected,
           const c = color.get(n.brain) ?? '#e7bf62';
           const dim = focus && !near.has(n.id);
           const active = n.id === selected;
-          return <g key={n.id} className="neural-map__node" opacity={dim ? 0.22 : 1}
+          const young = now - n.createdAt < FRESH;
+          const entering = born.has(n.id);
+          return <g key={n.id} className={`neural-map__node${entering ? ' is-born' : ''}`} opacity={dim ? 0.22 : 1}
+            style={entering ? { animationDelay: `${(hash(n.id) % 30) * 25}ms` } : undefined}
             tabIndex={0} role="button" aria-label={`Факт: ${brains.find(([id]) => id === n.brain)?.[1] ?? n.brain}, связей ${degree.get(n.id) ?? 0}`}
             onPointerEnter={() => setHover(n.id)} onPointerLeave={() => setHover('')}
             onPointerUp={event => { if (!drag.current?.moved) { event.stopPropagation(); drag.current = null; onSelect(n.id); } }}
             onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(n.id); } }}>
             {(active || n.id === hover) && <circle cx={p.x} cy={p.y} r={r + 9} fill={c} opacity=".45" filter="url(#nmGlow)" />}
-            <circle cx={p.x} cy={p.y} r={r} fill={c} stroke={active ? '#fbf3e4' : '#0d0a07'} strokeWidth={active ? 2.4 : 1.2} />
+            {young && <circle cx={p.x} cy={p.y} r={r + 5 * S} fill="none" stroke={c} className="neural-map__fresh" />}
+            {firing.has(n.id) && <circle cx={p.x} cy={p.y} r={r} fill="none" stroke={c} className="neural-map__ripple" />}
+            <circle cx={p.x} cy={p.y} r={r} fill={c} stroke={active ? '#fbf3e4' : '#0d0a07'} strokeWidth={active ? 2.4 : 1.2}
+              className="neural-map__dot" style={{ animationDelay: `${-(hash(n.id) % 4000)}ms` }} />
           </g>;
         })}
       </g>

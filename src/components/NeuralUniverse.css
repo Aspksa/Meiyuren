@@ -70,7 +70,10 @@
 .neural-map__zoom button { width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--line); background: #17110bd9; color: var(--ivory-dim); font-size: 16px; }
 .neural-map__zoom button:hover { border-color: var(--line-strong); color: var(--gold-soft); }
 
-.neural-universe__timeline { display: flex; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); }
+.neural-universe__timeline { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
+.neural-universe__timeline label { flex: 1; display: flex; align-items: center; gap: 14px; }
+.neural-universe__play { flex: none; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line-strong); background: radial-gradient(circle, #e7bf6230, #e7bf6208); color: var(--gold-soft); font-size: 12px; box-shadow: 0 0 14px #e7bf6222; }
+.neural-universe__play:hover { box-shadow: 0 0 20px #e7bf6255; }
 .neural-universe__timeline span { white-space: nowrap; }
 .neural-universe__timeline strong { color: var(--ivory-dim); font-weight: 500; }
 .neural-universe__timeline input { flex: 1; accent-color: var(--gold); }
@@ -97,6 +100,25 @@
 .neural-universe meter::-webkit-meter-bar { background: #3a2d1b; border: 0; border-radius: 9px; height: 6px; }
 .neural-universe meter::-webkit-meter-optimum-value { background: linear-gradient(90deg, #b98a32, #f3d891); border-radius: 9px; }
 .neural-universe meter::-moz-meter-bar { background: linear-gradient(90deg, #b98a32, #f3d891); border-radius: 9px; }
+
+/* Эффекты: дыхание, рождение, импульсы, вспышки. */
+.neural-map__dot { transform-box: fill-box; transform-origin: center; animation: nm-breathe 4.2s ease-in-out infinite; }
+.neural-map__fresh { stroke-width: 1.4; transform-box: fill-box; transform-origin: center; animation: nm-fresh 2.8s ease-in-out infinite; }
+.neural-map__ripple { stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: nm-ripple 1.8s ease-out infinite; pointer-events: none; }
+.neural-map__node.is-born { transform-box: fill-box; transform-origin: center; animation: nm-born 1.1s cubic-bezier(.2,1.4,.4,1) both; }
+.neural-map__pulse { fill: #fff3d2; filter: drop-shadow(0 0 4px #e7bf62) drop-shadow(0 0 8px #e7bf62); pointer-events: none; }
+.neural-map__edge.is-flash-up { animation: nm-flash-up 1.4s ease-out; }
+.neural-map__edge.is-flash-down { animation: nm-flash-down 1.4s ease-out forwards; }
+.neural-map__sparks circle { fill: #ef9b7b; animation: nm-spark 1s ease-out forwards; }
+.neural-map__brain circle:first-child { animation: nm-aura 7s ease-in-out infinite; }
+@keyframes nm-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+@keyframes nm-fresh { 0%, 100% { opacity: .15; transform: scale(.9); } 50% { opacity: .7; transform: scale(1.15); } }
+@keyframes nm-ripple { from { opacity: .9; transform: scale(1); } to { opacity: 0; transform: scale(3); } }
+@keyframes nm-born { 0% { opacity: 0; transform: scale(0); filter: brightness(3); } 60% { opacity: 1; transform: scale(1.5); filter: brightness(2); } 100% { transform: scale(1); filter: none; } }
+@keyframes nm-flash-up { 0% { stroke: #fff6dc; stroke-width: 9; filter: drop-shadow(0 0 10px #e7bf62); } 100% { filter: none; } }
+@keyframes nm-flash-down { 0% { stroke: #ef7b7b; } 100% { stroke-opacity: .25; } }
+@keyframes nm-spark { from { opacity: 1; transform: translate(0, 0); } to { opacity: 0; transform: translate(var(--dx), var(--dy)); } }
+@keyframes nm-aura { 0%, 100% { opacity: .05; } 50% { opacity: .11; } }
 
 /* Мозги */
 .neural-universe__brains { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
@@ -155,10 +177,12 @@
   .neural-universe__tabs { align-self: stretch; }
   .neural-universe__tabs button { flex: 1; padding: 8px 6px; }
   .neural-map svg { height: auto; aspect-ratio: 600 / 860; max-height: 70svh; }
-  .neural-universe__timeline { flex-direction: column; align-items: stretch; gap: 6px; }
+  .neural-universe__timeline label { flex-direction: column; align-items: stretch; gap: 6px; }
   .neural-universe__journal time { width: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .neural-universe { animation: none; }
+  .neural-map__dot, .neural-map__fresh, .neural-map__ripple, .neural-map__node.is-born, .neural-map__brain circle:first-child,
+  .neural-map__edge.is-flash-up, .neural-map__edge.is-flash-down { animation: none; }
   .neural-universe__brain, .neural-map__edge, .neural-map__node { transition: none; }
 }

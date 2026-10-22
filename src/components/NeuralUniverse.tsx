@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './NeuralUniverse.css';
 import { NeuralMap, edgeFamily } from './NeuralMap';
 import { plural } from '../lib/plural';
-import type { EdgeFamily } from './NeuralMap';
+import type { EdgeFamily, SynapseFlash } from './NeuralMap';
 import {
   getEvolutionLab, getNodeCard, getQualityGate, getSnapshots, getUniverseGraph, getUniverseStatus, sendSynapseFeedback,
 } from '../services/neuralApi';
@@ -47,6 +47,22 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
   const [cardError, setCardError] = useState('');
   const [voting, setVoting] = useState('');
   const cardRef = useRef<HTMLElement>(null);
+  const [flash, setFlash] = useState<SynapseFlash | null>(null);
+  const [playing, setPlaying] = useState(false);
+
+  // ▶ проигрывает рост памяти: шкала времени идёт от первого факта до сегодня.
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+    const start = performance.now();
+    const step = (time: number) => {
+      const t = Math.min(1, (time - start) / 9000);
+      setTimePercent(Math.round(t * 100));
+      if (t < 1) frame = requestAnimationFrame(step); else setPlaying(false);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -120,6 +136,7 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
     setVoting(other + helpful);
     try {
       await sendSynapseFeedback(card.item.id, other, helpful);
+      setFlash({ a: card.item.id, b: other, helpful, stamp: Date.now() });
       setCard(await getNodeCard(card.item.id));
       void refresh();
     } catch (cause) {
@@ -177,11 +194,15 @@ export function NeuralUniverse({ open, onClose }: { open: boolean; onClose: () =
           </div>
         </div>
         <NeuralMap graph={graph} brains={BRAINS} hiddenBrains={hiddenBrains} families={families}
-          at={at} selected={selected} onSelect={setSelected} />
-        <label className="neural-universe__timeline">
-          <span>Как росла память: <strong>{timePercent === 100 ? 'сейчас' : when(at)}</strong></span>
-          <input type="range" min="0" max="100" value={timePercent} onChange={e => setTimePercent(Number(e.target.value))} />
-        </label>
+          at={at} selected={selected} onSelect={setSelected} flash={flash} />
+        <div className="neural-universe__timeline">
+          <button type="button" className="neural-universe__play" onClick={() => setPlaying(p => !p)}
+            aria-label={playing ? 'Остановить показ роста памяти' : 'Показать, как росла память'}>{playing ? '❚❚' : '▶'}</button>
+          <label>
+            <span>Как росла память: <strong>{timePercent === 100 ? 'сейчас' : when(at)}</strong></span>
+            <input type="range" min="0" max="100" value={timePercent} onChange={e => { setPlaying(false); setTimePercent(Number(e.target.value)); }} />
+          </label>
+        </div>
         {graph?.truncated && <p className="neural-universe__hint">Показаны 300 самых свежих фактов.</p>}
       </div>
 
